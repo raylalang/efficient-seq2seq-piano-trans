@@ -11,6 +11,7 @@ from collections import defaultdict
 @hydra.main(config_path="config", config_name="main_config", version_base = None)
 def my_main(config: OmegaConf):
     # Create model.
+    config.training.mode = "test"
     model = MT3Trainer(config)
     print(model)
     # Load checkpoint.

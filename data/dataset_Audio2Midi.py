@@ -337,8 +337,8 @@ class Audio2Midi_Dataset(Dataset):
                 mid_paths = mid_paths[::10]   
             else:
                 pass
-                idx_list = idx_list[::5] # Test set, only use 1/5 of the data.
-                mid_paths = mid_paths[::5]
+                idx_list = idx_list[:] # Test set, only use 1/5 of the data.
+                mid_paths = mid_paths[:]
         else:
             if "DEBUG" in os.environ and os.environ["DEBUG"] == "True":
                 idx_list = idx_list[::5] # Test set, only use 1/5 of the data.

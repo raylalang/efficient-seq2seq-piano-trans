@@ -85,6 +85,7 @@ python train.py --config-name=$config\
 ## Evaluation
 
 ```bash
+# results will be saved to "path/to/checkpoint.ckpt_test/" 
 checkpoint_path="path/to/checkpoint.ckpt"
 echo $checkpoint_path
 python evaluate.py \
@@ -102,7 +103,7 @@ Download the checkpoint from release page to ./checkpoints.
 
 ```bash
 checkpoint_path=checkpoints/T5_V4_steps_200000.ckpt
-python inference.py audio_path="'audio/Franz-Liszt_Liebestraum.mp3'" midi_path="outputs/Franz-Liszt_Liebestraum.mid"
+python inference.py model.checkpoint_path="$checkpoint_path" audio_path="'audio/Franz-Liszt_Liebestraum.mp3'" +midi_path="outputs/Franz-Liszt_Liebestraum.mid"
 
 ```
 ## Acknowledgements

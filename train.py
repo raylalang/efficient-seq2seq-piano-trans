@@ -763,11 +763,13 @@ def my_main(config: OmegaConf):
         config
 
         # save source code
-        src_path = os.path.join(log_dir, "src").replace("'", "\\'")
-        OmegaConf.save(config, src_path+"/experiment_config.yaml")
-        os.system("rsync -av  --exclude='*/runs-debug/' --exclude='*/runs/' --include='*/' --prune-empty-dirs --progress --include='*.py' --exclude='*' $(pwd) %s"%src_path)
-        os.system("zip -r %s/src.zip %s"%(log_dir, src_path))
-        os.system("rm -rf %s"%src_path) # remove src dir.
+        if False:
+            src_path = os.path.join(log_dir, "src").replace("'", "\\'")
+            os.makedirs(src_path, exist_ok=True)
+            OmegaConf.save(config, src_path+"/experiment_config.yaml")
+            os.system("rsync -av  --exclude='*/runs-debug/' --exclude='*/runs/' --include='*/' --prune-empty-dirs --progress --include='*.py' --exclude='*' $(pwd) %s"%src_path)
+            os.system("zip -r %s/src.zip %s"%(log_dir, src_path))
+            os.system("rm -rf %s"%src_path) # remove src dir.
 
         # save config yaml.
         OmegaConf.save(config, log_dir+"/experiment_config.yaml")

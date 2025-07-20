@@ -44,7 +44,7 @@ if __name__ == "__main__":
     # audio_paths = [os.path.splitext(x)[0] + ".flac" for x in midi_paths]
     audio_paths = [os.path.splitext(x)[0] + ".wav" for x in midi_paths]
     indexs = list(df.index)
-    with h5py.File(root_dir + f"/audio_.h5", "w") as h5:
+    with h5py.File(root_dir + f"/audio.h5", "w") as h5:
         for idx, path in tqdm(zip(indexs, audio_paths), total=len(audio_paths)):
             
             # audio, sr = librosa.load(path, sr=None)

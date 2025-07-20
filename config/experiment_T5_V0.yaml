@@ -12,7 +12,7 @@ data:
   n_frames: 512 #  512, 1024, 2048
 
 model:
-  checkpoint_path: "checkpoints/T5_baseline_steps_200000.ckpt"
+  checkpoint_path: # "checkpoints/T5_baseline_steps_200000.ckpt"
 
 training:
   batch: 32

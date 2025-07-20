@@ -3,5 +3,5 @@ echo $checkpoint_path
 python evaluate.py \
   model.checkpoint_path="'$checkpoint_path'" \
   accelerator=gpu \
-  devices=[0,1]
+  devices=[0,1,2,3]
 
