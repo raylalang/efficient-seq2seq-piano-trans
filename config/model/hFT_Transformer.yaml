@@ -1,0 +1,32 @@
+# model:
+  model_name: hFT_Transformer
+  vocab_size: 643
+  encoder_name: "hFT_Transformer_Encoder" # "TransformerEncoder" # "CNNFreqTransEncoder" # "CNNEncoder", "TransformerEncoder"
+  decoder_name: "FrameLvTransDec" # "TransformerDecoder", "FrameLvTransDec"
+  
+  # common
+  n_frames: 256
+  emb_dim: 256
+  num_heads: 4
+  head_dim: 64
+  mlp_dim: 512
+  mlp_activations: relu
+  dropout_rate: 0.1
+  logits_via_embeddings: False
+  dtype: torch.float32
+  strict_checkpoint: True
+  checkpoint_path:
+  checkpoint_ignore_layres: []
+  # encoder
+  encoder_input_dim: 512
+  cnn_channel: 4
+  cnn_kernel: 5
+  num_encoder_layers: 3
+  n_margin: 32
+  encoder_position_emb: false
+  encoder_attention: "Multi_Head_Attention" # RelativeGlobalAttention, Multi_Head_Attention
+
+  # decoder
+  decoder_seq_length: 1 # 100， 5 # for decoder_input_type==symmetry, it should be odd number.
+  num_decoder_layers: 6
+  decoder_input_type: "symmetry" # symmetry, right, left

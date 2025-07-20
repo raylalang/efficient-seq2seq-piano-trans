@@ -1,0 +1,16 @@
+defaults:
+  - experiment_T5_V2_LocalEncDecAttn
+
+model:
+  # checkpoint_path:
+
+  encoder_decoder_slide_window_size: 64
+  hybrid_global_local_cross_attn: true
+
+data:
+  max_token_length: 1023
+
+training:
+  notes: "Efficient_Transformer_V3_HybridGlobalLocalCrossAttn=64"
+
+

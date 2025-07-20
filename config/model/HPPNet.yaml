@@ -1,0 +1,12 @@
+# model:
+
+  model_name: HPPNet
+  model_size: 128
+  head_size: 128
+  channel_harmonic: 16
+  octave_bins: 48
+  channel_in: 1
+  strict_checkpoint: true
+  checkpoint_path:
+
+

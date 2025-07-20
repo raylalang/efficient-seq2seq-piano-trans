@@ -1,0 +1,19 @@
+# data:
+  dataset_name: Audio2Midi_Dataset
+  dataset_dir: dataset/maestro-v3.0.0
+  features: cqt # mel, log-specgram, cqt
+  amplitude_to_db: true
+  num_mel_bins: 512
+  fft_size: 2048
+  mel_fmin: 20.0
+  mel_fmax: 7600.0
+  num_cqt_bins: 360 #512 #352
+  bins_per_octave: 48
+  cqt_fmin: 27.5 # 8.1757, 27.5 for piano, midi_id: 21~108
+  cqt_fmax: 
+  midi_min: 0 # 21 or 0
+  midi_max: 127 # 108 or 127
+  n_frames: 512 # 256
+  sample_rate: 16000
+  hop_length: 320 # 160 # 320
+  max_token_length: 512 #1024

@@ -1,0 +1,60 @@
+defaults:
+  # - model: Conformer
+  # - model: HPPNet
+  # - model: HPPformer
+  - model: T5
+  # - model: hFT_Transformer
+  - data: data_config
+  - training: training_config
+  
+devices: [0] # -1
+accelerator: gpu
+audio_path: "audio/Franz-Liszt_Liebestraum.mp3"
+
+data:
+    sequence_type: compound-word # performance-sequence, score-sequence
+
+    dataset_dirs: [dataset/maestro-v3.0.0] # dataset/maestro-v3.0.0, dataset/asap-dataset
+    dataset_sequence_types: [performance-sequence] # performance-sequence, score-sequence
+    cache_dir_name: cache
+
+    features:  cqt # cqt # log-stft, cqt, mel
+    amplitude_to_db: true #true
+    num_mel_bins: 360 # 512
+    decoder_targets: decoder_targets
+    token_types: performance-seq
+    midi_min: 0
+    midi_max: 127
+    n_frames: 256 #  512, 1024, 2048
+    max_token_length: 400 # 128, 256, 400, 512, 1024, 2048
+model:
+  # input_seq_length: ${data.n_frames} # should be the same with data.n_frames (if there is no downsampling) # 512 # 1024 # 2048 # 512
+  froze_encoder: false
+  # froze_encoder: true
+  strict_checkpoint: false
+
+  checkpoint_ignore_layres: [
+    "decoder.dense_onset_by_AttnMap.intermediate_layers.0.weight", 
+    "decoder.dense_onset_by_AttnMap.intermediate_layers.0.bias", 
+    "decoder.dense_onset_by_AttnMap.dense_layer.weight", 
+    "decoder.dense_onset_by_AttnMap.dense_layer.bias"
+  ]
+
+training:
+  notes: "T5"
+  mode: train
+  # mode: test
+  batch: 16 # 12 # 16  #4
+  batch_test: 256 # 64 # 256
+  batch_inference: 64
+  learning_rate: 1e-4
+  training_steps: 200001
+  evaluation_epochs: 5
+  online_testing: true
+
+  debug_log_offline: true
+  losses:
+    loss_decoder: [decoder_outputs, decoder_targets, loss.CrossEntropyLoss]
+
+
+

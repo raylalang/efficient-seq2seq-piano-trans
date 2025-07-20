@@ -1,0 +1,20 @@
+# model:
+  model_name: Conformer-Pretrained
+  vocab_size: 643
+  encoder_name: "CNNEncoder" # "TransformerEncoder" # "CNNFreqTransEncoder" # "CNNEncoder", "TransformerEncoder"
+  decoder_name: "FrameLvTransDec" # "TransformerDecoder", "FrameLvTransDec"
+  encoder_position_emb: true
+  encoder_kernel_size: 3
+  encoder_input_dim: 512
+  decoder_seq_length: 5
+  emb_dim: 512
+  num_heads: 8
+  num_decoder_layers: 6
+  head_dim: 64
+  mlp_dim: 1024
+  mlp_activations: relu
+  dropout_rate: 0.1
+  logits_via_embeddings: False
+  dtype: torch.float32
+  strict_checkpoint: True
+  checkpoint_path:

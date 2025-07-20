@@ -1,0 +1,36 @@
+# model:
+  model_name: HPPformer
+  vocab_size: 1024
+  encoder_name: "HPPNetEncoder" # "TransformerEncoder" # "CNNFreqTransEncoder" # "CNNEncoder", "TransformerEncoder", "HPPNetEncoder"
+  temporal_layer: "FG-LSTM" #"FG-LSTM", "Attention"
+  encoder_attention: "RelativeGlobalAttention" #Multi_Head_Attention, RelativeGlobalAttention
+  squeeze_channel_dim: false
+
+  froze_encoder: true
+
+  # num_encoder_layers: 3
+
+  num_adapter_layers: 3
+  decoder_mask_type: "casual" # "casual", "full"
+
+  decoder_name: TransformerDecoder #
+  encoder_position_emb: true
+  encoder_kernel_size: 3
+  encoder_input_dim: 256
+  encoder_size: 128
+  channel_harmonic: 16
+  octave_bins: 48
+  channel_in: 1
+  # decoder 
+  decoder_seq_length: 5
+  emb_dim: 512 #1024
+  num_heads: 8 #16
+  num_decoder_layers: 6
+  head_dim: 64
+  mlp_dim: 1024
+  mlp_activations: relu
+  dropout_rate: 0.1
+  logits_via_embeddings: False
+  dtype: torch.float32
+  strict_checkpoint: true
+  checkpoint_path:

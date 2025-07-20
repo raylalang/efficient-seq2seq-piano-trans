@@ -1,0 +1,12 @@
+defaults:
+  - experiment_T5_V0
+
+model:
+  # checkpoint_path:
+  encoder_window_size: 64 #65 # or None
+  
+training:
+  notes: "Efficient_Transformer_V1_LocalEncAttn=64"
+  
+
+  

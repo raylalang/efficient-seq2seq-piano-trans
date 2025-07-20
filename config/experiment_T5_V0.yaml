@@ -1,0 +1,30 @@
+defaults:
+  - base_config
+  - override model: T5
+  # - override data: data_mel
+  
+data:
+  features: mel # cqt # log-stft, cqt, mel
+  amplitude_to_db: false #true
+  num_mel_bins: 512 # 360 # 512
+
+  max_token_length: 1024 # 1023 2046 3069
+  n_frames: 512 #  512, 1024, 2048
+
+model:
+  checkpoint_path: "checkpoints/T5_baseline_steps_200000.ckpt"
+
+training:
+  batch: 32
+  batch_test: 256 # 64 # 256
+  learning_rate: 1e-4
+  training_steps: 200001
+  evaluation_epochs: 1
+  
+  mode: train
+  # mode: test
+  notes: "Baseline"
+
+
+
+

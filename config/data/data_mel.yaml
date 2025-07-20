@@ -1,0 +1,6 @@
+# defaults:
+  features: mel
+  amplitude_to_db: false # true
+  num_mel_bins: 512 # 360, 512
+  n_frames: 256 # 512, 1024, 2048
+  max_token_length: 200 # 128, 256, 512, 1024, 2048

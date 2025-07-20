@@ -1,0 +1,15 @@
+# training:
+  mode: train # train, test
+  learning_rate: 1e-4
+  training_steps: 50001 #1000000
+  checking_steps: 10000
+  evaluation_epochs: 5
+  evaluate_every_n_steps: 50
+  save_pianoroll_every_n_steps: [10, 20, 50, 100, 200, 500, 1000, 2000] # should be evaluate_every_n_steps * n
+  cal_metrics_every_n_steps: 50
+  batch: 24
+  num_workers: 12
+  losses:
+    loss_decoder: [decoder_outputs, decoder_targets, loss.CrossEntropyLoss]
+  log_dir:
+  debug_log_offline: false

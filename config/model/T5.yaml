@@ -1,0 +1,29 @@
+# model:
+  model_name: Transformer-T5
+  vocab_size: 1024
+  # """
+  # Token Types:
+  # 1) Instrument(128 values)
+  # 2) Note(128 values)
+  # 3) On/Off(2 values)
+  # 4) Time(205 values)
+  # 5) Drum(128 values)
+  # 6) End Tie Section(1 value)
+  # 7) EOS(1 value)
+  # """
+  encoder_name: "TransformerEncoder" # "TransformerEncoder" # "CNNFreqTransEncoder" # "CNNEncoder", "TransformerEncoder"
+  decoder_name: "TransformerDecoder" # "TransformerDecoder", "FrameLvTransDec"
+  encoder_attention: "Multi_Head_Attention" # Multi_Head_Attention, RelativeGlobalAttention
+  encoder_position_emb: true
+  encoder_input_dim: 512
+  emb_dim: 512
+  num_heads: 8
+  num_encoder_layers: 6
+  num_decoder_layers: 6
+  head_dim: 64
+  mlp_dim: 1024
+  mlp_activations: relu
+  dropout_rate: 0.1
+  logits_via_embeddings: False
+  dtype: torch.float32
+  # dtype: torch.float16
