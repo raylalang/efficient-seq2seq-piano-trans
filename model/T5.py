@@ -104,7 +104,11 @@ class Transformer(nn.Module):
             max_decode_length=None,
             use_preframe_tokens=True,
             decoder_targets_frame_index=None,
-            encoder_decoder_mask=None
+            encoder_decoder_mask=None,
+            beat_mem=None,
+            bar_mem=None,
+            beat_mask=None,
+            bar_mask=None
             ):
         
         encoder_decoder_mask_0 = encoder_decoder_mask
@@ -176,7 +180,8 @@ class Transformer(nn.Module):
             deterministic=not enable_dropout,
             decode=decode,
             decoder_targets_frame_index=decoder_targets_frame_index,
-            )
+            ,
+            beat_mem=beat_mem, bar_mem=bar_mem, beat_mask=beat_mask, bar_mask=bar_mask)
         return decoder_output_dict
     
     def _shift_right(self, input_ids, shift_step=1):
@@ -203,7 +208,11 @@ class Transformer(nn.Module):
                 dur_inputs = None,
                 dur_targets = None,
                 decoder_targets_frame_index=None,
-                encoder_decoder_mask=None
+                encoder_decoder_mask=None,
+            beat_mem=None,
+            bar_mem=None,
+            beat_mask=None,
+            bar_mask=None
     ):
         res_dict = {}
             
@@ -314,7 +323,8 @@ class Transformer(nn.Module):
                 encoder_decoder_mask=encoder_decoder_mask_i,
                 deterministic=True,
                 decode=use_kv_cache,
-                )
+                ,
+            beat_mem=beat_mem, bar_mem=bar_mem, beat_mask=beat_mask, bar_mask=bar_mask)
             
             logits = decoder_output_dict["decoder_outputs"]
             probs = torch.softmax(logits[:, -pred_step:, :], dim=-1)[..., :self.pad_token]

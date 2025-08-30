@@ -9,6 +9,33 @@ from model.Attention import Multi_Head_Attention
 from data.constants import *
 from model.Mask import make_sliding_window_mask
 
+
+class BeatBarContextAttention(nn.Module):
+    """
+    Lightweight per-layer cross-attention to optional beat/bar memories.
+    """
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        H, D = config.num_heads, config.head_dim
+        L = config.num_decoder_layers
+        self.pre_ln_beat = nn.ModuleList([LayerNorm(config.emb_dim) for _ in range(L)])
+        self.pre_ln_bar  = nn.ModuleList([LayerNorm(config.emb_dim) for _ in range(L)])
+        self.cross_beat  = nn.ModuleList([Multi_Head_Attention(num_heads=H, head_dim=D, dropout_rate=config.dropout_rate) for _ in range(L)])
+        self.cross_bar   = nn.ModuleList([Multi_Head_Attention(num_heads=H, head_dim=D, dropout_rate=config.dropout_rate) for _ in range(L)])
+        self.drop = nn.Dropout(config.dropout_rate)
+
+    def forward(self, y, layer_idx, beat_mem=None, bar_mem=None, beat_mask=None, bar_mask=None, beat_mem=None, bar_mem=None, beat_mask=None, bar_mask=None):
+        # y: [B, T, d]
+        if beat_mem is not None and (getattr(self.config, "context_mode", "beat_bar") in ["beat", "beat_bar"]):
+            z = self.pre_ln_beat[layer_idx](y)
+            y = y + self.drop(self.cross_beat[layer_idx](z, beat_mem, mask=None))
+        if bar_mem is not None and (getattr(self.config, "context_mode", "beat_bar") in ["bar", "beat_bar"]):
+            z = self.pre_ln_bar[layer_idx](y)
+            y = y + self.drop(self.cross_bar[layer_idx](z, bar_mem, mask=None))
+        return y
+
+
 class DecoderLayer(nn.Module):
     def __init__(self, config,  layer_idx=0):
         super(DecoderLayer, self).__init__()
@@ -139,7 +166,13 @@ class Decoder(nn.Module):
         self.layer_norm = LayerNorm(config.emb_dim)
         self.dense = nn.Linear(in_features=config.emb_dim, out_features=config.vocab_size)
         self.dense_pitch = nn.Linear(in_features=config.emb_dim, out_features=config.vocab_size)
-        self.dense_velocity = nn.Linear(in_features=config.emb_dim, out_features=config.vocab_size)
+        self.dense_velocity =
+        # Context cross-attn (beat/bar)
+        if hasattr(config, 'use_context') and config.use_context:
+            self.bb_context = BeatBarContextAttention(config)
+        else:
+            self.bb_context = None
+         nn.Linear(in_features=config.emb_dim, out_features=config.vocab_size)
             
             
     def initialize_decoder_cache(self):
@@ -265,9 +298,13 @@ class CompoundDecoder(nn.Module):
             # [batch, length, emb_dim] -> [batch, length, emb_dim]
             if layer_idx < len(self.decoder_layers) - 1:
                 y = layer(y, encoded, decoder_mask=decoder_mask, encoder_decoder_mask=encoder_decoder_mask, decode=decode)
+            if self.bb_context is not None:
+                y = self.bb_context(y, layer_idx, beat_mem=beat_mem, bar_mem=bar_mem, beat_mask=beat_mask, bar_mask=bar_mask)
             else:
                 # Get attention weights of the last layer
                 y, cross_attention_weights = layer(y, encoded, decoder_mask=decoder_mask, encoder_decoder_mask=encoder_decoder_mask, decode=decode, return_attn_weights=True)
+                if self.bb_context is not None:
+                    y = self.bb_context(y, layer_idx, beat_mem=beat_mem, bar_mem=bar_mem, beat_mask=beat_mask, bar_mask=bar_mask)
         
         y = self.layer_norm(y)
         y = self.dropout(y)

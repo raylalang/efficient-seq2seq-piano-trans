@@ -1,0 +1,14 @@
+
+defaults:
+  - experiment_T5_V3_HybridGlobalLocalCrossAttn
+
+model:
+  use_context: true
+  context_mode: beat_bar   # beat | bar | beat_bar
+  context_bars: 4          # adds 4 more bars total context (±2)
+  beats_per_bar: 4
+  beat_sigma_frames: 6
+  add_tempo_features: false
+
+training:
+  notes: "V5 Beat+Bar context (±2 bars), Gaussian beat pooling"

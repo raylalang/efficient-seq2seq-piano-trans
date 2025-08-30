@@ -34,6 +34,7 @@ from data.constants import *
 from data.symbolic_music_tokenizer import SymbolicMusicTokenizer, TokenOnset, ONSET_SEC_UP_SAMPLING
 import data.symbolic_music_tokenizer as Tokenizer
 from collections import defaultdict
+from data.beat_context import compute_beats_full_audio, group_beats_into_bars_simple, select_context_bar_window, slice_context_seconds, bar_index_for_time
 
 
 
@@ -96,6 +97,9 @@ class SingleWavDataset(Dataset):
         self.audio_name = os.path.split(audio_path)[1].replace(".flac", "")
         # assert midi_name == audio_name
         self.audio_size = self.audio_h5[self.audio_idx]["audio"].shape[0]
+        # Beat cache per piece
+        self._beat_times_sec = None
+        self._tempo = None
         
         self.total_frames = np.ceil( self.audio_size / hop_length ).astype(int)
         # self.total_frames = int(duration * frames_per_second)
@@ -130,7 +134,21 @@ class SingleWavDataset(Dataset):
             
         self.data_loaded = True
         
-    def __getitem__(self, index, begin=None, end=None):
+    
+    def _ensure_beats(self):
+        if self._beat_times_sec is None:
+            # Load full audio into memory once (float32)
+            try:
+                y = self.audio_h5[self.audio_idx]["audio"][:]
+            except Exception:
+                # some h5 datasets store as memorymap-like; use slicing
+                y = np.array(self.audio_h5[self.audio_idx]["audio"][()])
+            sr = int(self.config.data.sample_rate)
+            tempo, beats = compute_beats_full_audio(y, sr=sr)
+            self._tempo = tempo
+            self._beat_times_sec = beats
+        return self._tempo, self._beat_times_sec
+def __getitem__(self, index, begin=None, end=None):
         if self.data_loaded == False:
             self.__load_cache()
             
@@ -253,8 +271,30 @@ class SingleWavDataset(Dataset):
         dataset_name = torch.tensor(dataset_name, dtype=torch.long)
         dataset_name = torch.nn.functional.pad(dataset_name, pad=[0, 32 - dataset_name.size()[0]], value=ord(" "))
         
+        
+        # Compute context based on beats/bars (cached)
+        tempo, beat_times = self._ensure_beats()
+        beats_per_bar = int(getattr(self.config.model, "beats_per_bar", 4))
+        ptrs = group_beats_into_bars_simple(beat_times, beats_per_bar=beats_per_bar)
+        # Center bar determined by begin_sec
+        center_bar = bar_index_for_time(beat_times, ptrs, begin_sec, beats_per_bar=beats_per_bar)
+        side = int(getattr(self.config.model, "context_bars", 4) // 2)  # default ±2 bars
+        start_bar, end_bar = select_context_bar_window(ptrs, center_bar, side)
+        ctx_begin_sec, ctx_end_sec = slice_context_seconds(beat_times, ptrs, start_bar, end_bar)
+        # Convert to sample indices
+        sr = int(self.config.data.sample_rate)
+        ctx_begin = int(max(0, round(ctx_begin_sec * sr)))
+        ctx_end = int(min(self.audio_size, round(ctx_end_sec * sr)))
+        context_audio = torch.tensor(self.audio_h5[self.audio_idx]["audio"][ctx_begin:ctx_end])
+        # Beat times relative to context start, but keep only those inside the context window
+        beat_mask = (beat_times >= ctx_begin_sec) & (beat_times <= ctx_end_sec + 1e-6)
+        context_beat_times = torch.tensor(beat_times[beat_mask] - ctx_begin_sec, dtype=torch.float32)
+    
         row.update({
             "inputs": audio,
+            # --- Long-context additions ---
+            # Build context window using ±N bars around the bar containing begin_sec.
+            
             "decoder_targets": decoder_targets,
             "decoder_targets_mask": decoder_targets_mask,
             "decoder_targets_len": torch.tensor(seq_len, dtype=torch.long),
@@ -267,6 +307,8 @@ class SingleWavDataset(Dataset):
             "frame_offsets":torch.tensor(begin, dtype=torch.long),
             "midi_path": midi_path,
             "dataset_name": dataset_name,
+            "context_audio": context_audio,
+            "context_beat_times": context_beat_times,
             "dataset_index": torch.tensor(self.dataset_index, dtype=torch.long),
         })
 

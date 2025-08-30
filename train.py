@@ -36,6 +36,7 @@ import os
 from sklearn.metrics import accuracy_score
 import matplotlib.pyplot as plt
 from data.mel import MelSpectrogram
+from model.context_poolers import BeatPooler, BarPooler
 # from nnAudio.features import CQT, STFT
 # import nnAudio.utils
 from PIL import Image
@@ -81,6 +82,10 @@ class MT3Trainer(pl.LightningModule):
         self.last_time_stamp = std_time.time()
         self.validation_step_count = 0
         self.criterion_list = []
+        # Context poolers
+        if getattr(self.config.model, 'use_context', False):
+            self.beat_pooler = BeatPooler(d_model=self.config.model.emb_dim, sigma_frames=getattr(self.config.model, 'beat_sigma_frames', 6), hop_length=self.config.data.hop_length, sample_rate=self.config.data.sample_rate, add_tempo_features=getattr(self.config.model, 'add_tempo_features', False))
+            self.bar_pooler = BarPooler(d_model=self.config.model.emb_dim)
         for loss_name, [outputs_name, targets_name, criterion_module] in config.training.losses.items():
             criterion_class_name = criterion_module.split(".")[-1]
             criterion_class = getattr(importlib.import_module(criterion_module), criterion_class_name)
@@ -111,7 +116,7 @@ class MT3Trainer(pl.LightningModule):
     def forward(self, encoder_input_tokens, decoder_target_tokens, decode, decoder_input_tokens = None, decoder_positions=None, decoder_targets_frame_index=None, encoder_decoder_mask=None):
         return self.model.forward(encoder_input_tokens, decoder_target_tokens, decode=decode, decoder_input_tokens=decoder_input_tokens, decoder_positions=decoder_positions, 
                 decoder_targets_frame_index=decoder_targets_frame_index,
-                encoder_decoder_mask=encoder_decoder_mask)
+                encoder_decoder_mask=encoder_decoder_mask, beat_mem=beat_mem, bar_mem=bar_mem, beat_mask=beat_mask, bar_mask=bar_mask)
     
     def log_time_event(self, event_name):
         if self.global_rank == 0:
@@ -185,9 +190,52 @@ class MT3Trainer(pl.LightningModule):
         self.log_time_event("data_load_done")
         # CNN encoder still use input shape of [B, T, F].
         # => [B*T, n_token, vocab_size], [B, T, 128]
+        
+        beat_mem = None
+        bar_mem = None
+        beat_mask = None
+        bar_mask = None
+        if getattr(self.config.model, 'use_context', False) and ("context_audio" in batch):
+            # Build encoder features for context audio just like inputs
+            ctx = batch["context_audio"]
+            with torch.no_grad():
+                ctx_feat = self.features_extracter(ctx[:, :-1]).transpose(-1, -2)
+                if self.config.data.amplitude_to_db:
+                    ctx_feat = torchaudio.transforms.AmplitudeToDB(top_db=80.0)(ctx_feat)
+            # Compute beat embeddings
+            # context_beat_times might be a padded tensor; convert to per-sample list
+            cbt = batch.get("context_beat_times", None)
+            if cbt is None:
+                # Fallback: create evenly spaced pseudo-beats (avoid crash)
+                B, T, D = ctx_feat.shape
+                num_beats = 20
+                times = torch.linspace(0, (T-1)*self.config.data.hop_length/float(self.config.data.sample_rate), steps=num_beats, device=ctx_feat.device)
+                cbt = [times for _ in range(B)]
+            else:
+                if isinstance(cbt, torch.Tensor):
+                    # convert padded to list sans zeros by mask if provided
+                    mask = batch.get("context_beat_mask", None)
+                    if mask is not None:
+                        beats_list = [cbt[b, mask[b]].detach().cpu() for b in range(cbt.size(0))]
+                    else:
+                        # remove trailing zeros
+                        beats_list = []
+                        for b in range(cbt.size(0)):
+                            row = cbt[b]
+                            # keep positive times
+                            valid = row > 0
+                            beats_list.append(row[valid].detach().cpu())
+                    cbt = beats_list
+                else:
+                    cbt = list(cbt)
+            beat_mem, beat_mask = self.beat_pooler(ctx_feat, cbt)
+            # Bar embeddings
+            beats_per_bar = int(getattr(self.config.model, "beats_per_bar", 4))
+            bar_mem, bar_mask = self.bar_pooler(beat_mem, beat_mask, beats_per_bar=beats_per_bar)
+    
         outputs_dict = self.forward(encoder_input_tokens=inputs, decoder_target_tokens=decoder_target_tokens, decode=False, decoder_input_tokens = decoder_inputs, 
                                     decoder_targets_frame_index=decoder_targets_frame_index,
-                                    encoder_decoder_mask=encoder_decoder_mask)
+                                    encoder_decoder_mask=encoder_decoder_mask, beat_mem=beat_mem, bar_mem=bar_mem, beat_mask=beat_mask, bar_mask=bar_mask)
         self.log_time_event("forward_done")
 
         # cal losses
