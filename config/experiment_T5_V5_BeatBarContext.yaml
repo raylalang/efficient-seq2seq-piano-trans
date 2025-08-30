@@ -1,0 +1,8 @@
+# config/experiment_T5_V5_BeatBarContext.yaml
+model:
+  use_context: true
+  context_mode: beat_bar   # beat | bar | beat_bar
+  context_bars: 4
+  beats_per_bar: 4
+  beat_sigma_frames: 6
+  add_tempo_features: false
