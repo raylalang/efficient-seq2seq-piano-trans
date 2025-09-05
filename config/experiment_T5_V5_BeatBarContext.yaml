@@ -1,4 +1,7 @@
 # config/experiment_T5_V5_BeatBarContext.yaml
+defaults:
+  - experiment_T5_V0
+
 model:
   use_context: true
   context_mode: beat_bar   # beat | bar | beat_bar
@@ -6,3 +9,13 @@ model:
   beats_per_bar: 4
   beat_sigma_frames: 6
   add_tempo_features: false
+  context_fuse: concat
+
+training:
+  notes: "BeatBarContext"
+
+data:
+  n_frames: 1024
+  max_token_length: 2048
+  dataset_dir: /nvme1/ray/maestro-v3.0.0
+  dataset_dirs: [/nvme1/ray/maestro-v3.0.0]
