@@ -1204,8 +1204,8 @@ def my_main(config: OmegaConf):
     else:
         ckpt = torch.load(config.model.checkpoint_path, map_location="cpu")
         state_dict = ckpt.get("state_dict", ckpt)  # supports both formats
-        if config.model.checkpoint_ignore_layres is not None:
-            for key in config.model.checkpoint_ignore_layres:
+        if config.model.checkpoint_ignore_layers is not None:
+            for key in config.model.checkpoint_ignore_layers:
                 if key in state_dict:
                     del state_dict[key]
         model.model.load_state_dict(state_dict, strict=config.model.strict_checkpoint)
@@ -1273,7 +1273,7 @@ def my_main(config: OmegaConf):
     if config.training.mode != "train":
         logger_list = []
     trainer = pl.Trainer(
-        devices=config.devices,  # 1 [1,2, 4, 5, 6,7]
+        devices=config.devices,
         accelerator=config.accelerator,  # "gpu"
         logger=logger_list,
         #  val_check_interval=0.0, # 0.0:disable, None:total training batch.

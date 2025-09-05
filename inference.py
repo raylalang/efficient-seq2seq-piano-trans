@@ -40,7 +40,7 @@ def my_main(config: OmegaConf):
 
         # Remove keys that are in the ignore list.
         for key in list(state_dict.keys()):
-            if key in config.model.checkpoint_ignore_layres:
+            if key in config.model.checkpoint_ignore_layers:
                 print(f"Removing key {key} from state_dict")
                 del state_dict[key]
 
