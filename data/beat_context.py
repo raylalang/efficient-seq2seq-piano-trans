@@ -1,7 +1,19 @@
-
 from __future__ import annotations
 import numpy as np
+
+# --- SciPy 2.0 compatibility: provide signal.hann alias if missing ---
+try:
+    import scipy.signal as _sig
+
+    if not hasattr(_sig, "hann"):
+        from scipy.signal.windows import hann as _hann
+
+        _sig.hann = _hann  # make librosa's old import path work
+except Exception:
+    pass
+
 import librosa
+
 
 def compute_beats_full_audio(audio: np.ndarray, sr: int):
     """
@@ -14,9 +26,12 @@ def compute_beats_full_audio(audio: np.ndarray, sr: int):
         maxv = np.max(np.abs(audio)) + 1e-8
         if maxv > 0:
             audio = audio / maxv
-    tempo, beat_frames = librosa.beat.beat_track(y=audio, sr=sr, trim=False, units='frames')
+    tempo, beat_frames = librosa.beat.beat_track(
+        y=audio, sr=sr, trim=False, units="frames"
+    )
     beat_times_sec = librosa.frames_to_time(beat_frames, sr=sr)
     return float(tempo), beat_times_sec.astype(np.float32)
+
 
 def group_beats_into_bars_simple(beat_times_sec: np.ndarray, beats_per_bar: int = 4):
     """
@@ -31,7 +46,10 @@ def group_beats_into_bars_simple(beat_times_sec: np.ndarray, beats_per_bar: int 
     ptrs[-1] = n_beats  # clip last pointer to actual length
     return ptrs
 
-def select_context_bar_window(ptrs: np.ndarray, center_bar_idx: int, num_context_bars_each_side: int):
+
+def select_context_bar_window(
+    ptrs: np.ndarray, center_bar_idx: int, num_context_bars_each_side: int
+):
     """
     Given bar pointers and a center bar index, select a symmetric window of bars.
     Returns (start_bar, end_bar_exclusive).
@@ -41,7 +59,10 @@ def select_context_bar_window(ptrs: np.ndarray, center_bar_idx: int, num_context
     end_bar = min(n_bars, center_bar_idx + num_context_bars_each_side + 1)
     return start_bar, end_bar
 
-def slice_context_seconds(beat_times_sec: np.ndarray, ptrs: np.ndarray, start_bar: int, end_bar: int):
+
+def slice_context_seconds(
+    beat_times_sec: np.ndarray, ptrs: np.ndarray, start_bar: int, end_bar: int
+):
     """
     Convert the selected bar window into (begin_sec, end_sec) using beat boundaries.
     """
@@ -60,13 +81,17 @@ def slice_context_seconds(beat_times_sec: np.ndarray, ptrs: np.ndarray, start_ba
     end_sec = float(beat_times_sec[end_beat] + max(gap, 1e-3))
     return begin_sec, end_sec
 
+
 def nearest_beat_index(beat_times_sec: np.ndarray, t_sec: float):
     if len(beat_times_sec) == 0:
         return 0
     idx = int(np.argmin(np.abs(beat_times_sec - t_sec)))
     return idx
 
-def bar_index_for_time(beat_times_sec: np.ndarray, ptrs: np.ndarray, t_sec: float, beats_per_bar: int = 4):
+
+def bar_index_for_time(
+    beat_times_sec: np.ndarray, ptrs: np.ndarray, t_sec: float, beats_per_bar: int = 4
+):
     """
     Approximate: find nearest beat, then map to bar via ptrs // beats_per_bar.
     """
