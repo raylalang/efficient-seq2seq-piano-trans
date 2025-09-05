@@ -10,7 +10,8 @@ from model.Encoder import Encoder
 from model.Decoder import Decoder, CompoundDecoder
 from model.Layers import *
 from model.Mask import *
-from model.HPPNet import HPPNet
+
+# from model.HPPNet import HPPNet
 from data.constants import *
 
 from torch.nn.utils.rnn import pad_sequence
@@ -53,6 +54,24 @@ class Transformer(nn.Module):
             self.decoder = CompoundDecoder(
                 config=config, sub_token_names=sub_token_names
             )
+
+        D = config.emb_dim
+        # Projections for concat along D (2D when one of beat/bar; 3D when both)
+        self._fuse2 = nn.Linear(2 * D, D)
+        self._fuse3 = nn.Linear(3 * D, D)
+        self._fuse_ln = nn.LayerNorm(D)
+        self._fuse_drop = nn.Dropout(getattr(config, "dropout_rate", 0.1))
+        # Optional residual gate (starts at 0 so it’s safe)
+        self._fuse_alpha = nn.Parameter(torch.zeros(1))
+        self._ctx_mha = nn.MultiheadAttention(
+            embed_dim=D,
+            num_heads=config.num_heads,
+            dropout=getattr(config, "dropout_rate", 0.1),
+            batch_first=True,
+        )
+        self._ctx_ln = nn.LayerNorm(D)
+        self._ctx_drop = nn.Dropout(getattr(config, "dropout_rate", 0.1))
+        self._attn_alpha = nn.Parameter(torch.zeros(1))  # gated residual
 
         self.pad_token = TOKEN_PAD
         self.eos_token = TOKEN_END
@@ -226,7 +245,7 @@ class Transformer(nn.Module):
     ):
         res_dict = {}
 
-        if decoder_input_tokens == None:
+        if decoder_input_tokens is None:
             decoder_input_tokens = self._shift_right(
                 decoder_target_tokens, shift_step=1
             )
@@ -237,11 +256,46 @@ class Transformer(nn.Module):
             enable_dropout=enable_dropout,
         )
 
+        fuse = getattr(self.config, "context_fuse", None)
+
         if additional_encoder_memory is not None:
-            # concatenate along time dimension so decoder can attend to both
-            encoder_outputs = torch.cat(
-                [encoder_outputs, additional_encoder_memory], dim=1
-            )
+            if isinstance(additional_encoder_memory, dict) and fuse in (
+                "concat",
+                "attn",
+            ):
+                if fuse == "concat":
+                    encoder_outputs = self._fuse_context_concat(
+                        encoder_outputs, additional_encoder_memory
+                    )
+                else:  # "attn"
+                    encoder_outputs = self._fuse_context_attn(
+                        encoder_outputs, additional_encoder_memory
+                    )
+                # NOTE: T unchanged; do NOT extend encoder_decoder_mask here.
+            else:
+                # Legacy: time-append
+                if isinstance(additional_encoder_memory, dict):
+                    additional_encoder_memory = self._collect_ctx(
+                        additional_encoder_memory
+                    )
+                if additional_encoder_memory is not None:
+                    additional_encoder_memory = additional_encoder_memory.to(
+                        encoder_outputs.dtype
+                    ).to(encoder_outputs.device)
+                    encoder_outputs = torch.cat(
+                        [encoder_outputs, additional_encoder_memory], dim=1
+                    )
+                    if encoder_decoder_mask is not None:
+                        B, H, T_dec, T_enc = encoder_decoder_mask.shape
+                        T_add = additional_encoder_memory.size(1)
+                        add_mask = torch.ones(
+                            (B, H, T_dec, T_add),
+                            dtype=encoder_decoder_mask.dtype,
+                            device=encoder_decoder_mask.device,
+                        )
+                        encoder_decoder_mask = torch.cat(
+                            [encoder_decoder_mask, add_mask], dim=-1
+                        )
 
         decoder_output_dict = self.decode(
             encoder_outputs,
@@ -261,46 +315,59 @@ class Transformer(nn.Module):
 
         return res_dict
 
-    def generate_0(self, primer=None, target_seq_length=1024):
-        num_primer = len(primer)
-        len_primer = len(primer[0])
-        # -> [num_frame x vec_size]
-        gen_tokens = torch.LongTensor(
-            [self.pad_token for i in range(target_seq_length - len_primer)]
-        ).expand(num_primer, target_seq_length - len_primer)
-        gen_tokens = torch.concat(
-            (primer.type(torch.long), gen_tokens.device(primer.device)), dim=-1
-        )
-
-        i = num_primer
-        while i < target_seq_length:
-            logits, _ = self.forward(gen_tokens[..., :i], decode=True)
-            probs = self.softmax(logits)[..., : self.eos_token]
-            token_probs = probs[:, i - 1, :]
-
-            next_token = torch.argmax(token_probs)
-            gen_tokens[:, i] = next_token
-
-            if next_token == self.eos_token:
-                break
-            i += 1
-
-        return gen_tokens[:, :i]
-
     # @profile_cuda_memory
     def generate(
-        self, encoder_inputs, target_seq_length=1024, berak_on_eos=False, global_rank=0
+        self,
+        encoder_inputs,
+        target_seq_length=1024,
+        break_on_eos=False,
+        global_rank=0,
+        additional_encoder_memory=None,
     ):
         self.decoder.initialize_decoder_cache()
 
         batch_size, T, n_mel = encoder_inputs.size()
-        gen_tokens = (
-            torch.ones([batch_size, target_seq_length]).to(encoder_inputs) * TOKEN_PAD
+        gen_tokens = torch.full(
+            (batch_size, target_seq_length),
+            TOKEN_PAD,
+            dtype=torch.long,
+            device=encoder_inputs.device,
         )
         eos_flags = torch.zeros(batch_size, dtype=int).to(encoder_inputs.device)
         curr_frame_index = torch.zeros(batch_size, dtype=int).to(encoder_inputs.device)
         max_num_tokens = 0
         encoded = self.encode(encoder_inputs, enable_dropout=False)
+
+        # concat memory for inference
+        fuse = getattr(self.config, "context_fuse", None)
+        if additional_encoder_memory is not None:
+            if isinstance(additional_encoder_memory, dict) and fuse in (
+                "concat",
+                "attn",
+            ):
+                if fuse == "concat":
+                    encoded = self._fuse_context_concat(
+                        encoded, additional_encoder_memory
+                    )
+                else:
+                    encoded = self._fuse_context_attn(
+                        encoded, additional_encoder_memory
+                    )
+                # T unchanged
+                legacy_time_append = False
+            else:
+                if isinstance(additional_encoder_memory, dict):
+                    additional_encoder_memory = self._collect_ctx(
+                        additional_encoder_memory
+                    )
+                legacy_time_append = additional_encoder_memory is not None
+                if legacy_time_append:
+                    encoded = torch.cat([encoded, additional_encoder_memory], dim=1)
+        else:
+            legacy_time_append = False
+
+        # build masks with the new encoder length
+        T = encoded.size(1)
         decoder_mask = torch.tril(
             torch.ones((target_seq_length, target_seq_length), dtype=self.config.dtype),
             diagonal=0,
@@ -309,7 +376,7 @@ class Transformer(nn.Module):
             decoder_mask.unsqueeze(0)
             .unsqueeze(0)
             .expand(batch_size, self.config.num_heads, -1, -1)
-        )  # [batch_size, 1, target_seq_length, target_seq_length]
+        )
         encoder_decoder_mask = torch.ones(
             (batch_size, self.config.num_heads, target_seq_length, T),
             dtype=self.config.dtype,
@@ -325,13 +392,18 @@ class Transformer(nn.Module):
             pred_step = 2
 
         use_kv_cache = True
-        curr_token = (
-            torch.ones([batch_size, pred_step]).to(encoder_inputs) * TOKEN_START
+        curr_token = torch.full(
+            (batch_size, pred_step),
+            TOKEN_START,
+            dtype=torch.long,
+            device=encoder_inputs.device,
         )  # [batch_size, pred_step]
-        for i in tqdm(
-            range(0, target_seq_length, pred_step),
-            desc="Generating tokens (rank %d)" % global_rank,
-        ):
+        # for i in tqdm(
+        #     range(0, target_seq_length, pred_step),
+        #     desc="Generating tokens (rank %d)" % global_rank,
+        # ):
+        print("Generating tokens")
+        for i in range(0, target_seq_length, pred_step):
             encoded_i = encoded[:, :T, :]  # [batch_size, T, n_mel]
 
             if use_kv_cache:
@@ -361,32 +433,41 @@ class Transformer(nn.Module):
                 and hasattr(self.config, "encoder_decoder_slide_window_size")
                 and self.config.encoder_decoder_slide_window_size > 0
             ):
-                enc_len, emb_dim = encoded.size(1), encoded.size(2)
-                encoded_fold = encoded.view(
-                    batch_size,
-                    -1,
-                    self.config.encoder_decoder_slide_window_size,
-                    emb_dim,
-                )  # [batch_size, num_windows, window_size, emb_dim]
-                # => [batch_size, 1]
-                curr_window_index = torch.floor(
-                    curr_frame_index // self.config.encoder_decoder_slide_window_size
-                ).int()  # .unsqueeze(0)  # [batch_size, 1]
-                batch_indices = torch.arange(
-                    batch_size, device=encoded.device
-                )  # .unsqueeze(1)  # [batch_size, 1]
-                encoded_i = encoded_fold[
-                    batch_indices, curr_window_index, :, :
-                ]  # [batch_size, 1, window_size, emb_dim]
-                # print(encoded_i.size())
-                encoded_i = encoded_i.view(
-                    batch_size, self.config.encoder_decoder_slide_window_size, emb_dim
-                )  # [batch_size, window_size, emb_dim]
+                W = int(self.config.encoder_decoder_slide_window_size)
+                # integer division already floors; also clamp to last full/partial window
+                start = (curr_frame_index // W) * W  # [B]
+                start = torch.clamp(start, max=max(0, T - 1)).long()  # stay in [0, T-1]
 
-                # encoder_decoder_mask_i = torch.stack(encoder_decoder_mask_i_list, dim=0)
-                encoder_decoder_mask_i = encoder_decoder_mask_i[
-                    :, :, :, : self.config.encoder_decoder_slide_window_size
-                ]  # [batch_size, 1, i+pred_step, T]
+                # slice per batch (handles last partial window without padding)
+                enc_chunks, mask_chunks = [], []
+                for b in range(batch_size):
+                    s = int(start[b].item())
+                    e = min(T, s + W)
+                    enc_chunks.append(encoded[b : b + 1, s:e, :])
+                    mask_chunks.append(encoder_decoder_mask_i[b : b + 1, :, :, s:e])
+                encoded_i = torch.cat(enc_chunks, dim=0)
+                encoder_decoder_mask_i = torch.cat(mask_chunks, dim=0)
+
+                # ALWAYS re-append context memory if using legacy time-append
+                if additional_encoder_memory is not None and legacy_time_append:
+                    T_add = additional_encoder_memory.size(1)
+                    add_mem = additional_encoder_memory.to(encoded_i.dtype).to(
+                        encoded_i.device
+                    )
+                    encoded_i = torch.cat([encoded_i, add_mem], dim=1)
+                    add_mask = torch.ones(
+                        (
+                            batch_size,
+                            self.config.num_heads,
+                            encoder_decoder_mask_i.size(2),
+                            T_add,
+                        ),
+                        dtype=encoder_decoder_mask_i.dtype,
+                        device=encoder_decoder_mask_i.device,
+                    )
+                    encoder_decoder_mask_i = torch.cat(
+                        [encoder_decoder_mask_i, add_mask], dim=-1
+                    )
 
             # Hierarchical pooling
             encoded_pooling_dict = None
@@ -422,17 +503,14 @@ class Transformer(nn.Module):
                 decode=use_kv_cache,
             )
 
-            logits = decoder_output_dict["decoder_outputs"]
-            probs = torch.softmax(logits[:, -pred_step:, :], dim=-1)[
-                ..., : self.pad_token
+            # Take just the step we’re decoding and slice to actual vocab size
+            logits_step = decoder_output_dict["decoder_outputs"][
+                :, -pred_step:, : self.config.vocab_size
             ]
 
-            # Check if the output sequence is in the expected order: onset, pitch/noteOff, velocity
-            if (
-                hasattr(self.config, "hybrid_global_local_cross_attn")
-                and self.config.hybrid_global_local_cross_attn
-            ):
-                tokens_ori = torch.argmax(probs, dim=-1)
+            # (A) Optional “format check” now reads from logits (argmax identical to softmax argmax)
+            if getattr(self.config, "hybrid_global_local_cross_attn", False):
+                tokens_ori = logits_step.argmax(dim=-1)
                 eos_flags_int = eos_flags.int()
                 for b in range(batch_size):
                     token_i = tokens_ori[b, 0].item()
@@ -467,44 +545,40 @@ class Transformer(nn.Module):
                             Tokenizer.TokenNoteOff.is_instance(prev_token_i)
                             and token_i != TOKEN_BLANK
                         ):
-                            # If the previous token is a NoteOff, then the current velocity should be TOKEN_BLANK
                             print(
-                                f"Warning: The generated token {token_i} at batch idx {b} position {i} is a velocity token, but the previous token is a NoteOff. The velocity should be {TOKEN_BLANK}, but got {token_i}."
+                                f"Warning: velocity after NoteOff should be {TOKEN_BLANK}, got {token_i}."
                             )
                         dest_token_type_i = (Tokenizer.TokenVel,)
-                    if not token_type_i in dest_token_type_i:
+                    if token_type_i not in dest_token_type_i:
                         print(
-                            f"Warning: The generated token {token_i} at batch idx {b} position {i} is not in the expected format. Expected: {dest_token_type_i}, but got: {token_type_i}."
+                            f"Warning: token {token_i} at (b={b}, i={i}) unexpected. Expected {dest_token_type_i}, got {token_type_i}."
                         )
 
-            if (
-                hasattr(self.config, "hybrid_global_local_cross_attn")
-                and self.config.hybrid_global_local_cross_attn
-            ):
-                # Force the output sequence to in the format of onset, pitch, and velocity
-                if i % 3 == 0:  # Onset or EOS token
-                    begin, end = Tokenizer.TokenOnset.get_bound()
-                    probs[:, :, begin:end] += 1
-                    probs[:, :, self.eos_token] += 1
-                elif i % 3 == 1:  # Pitch token, NoteOn or NoteOff
-                    begin, end = Tokenizer.TokenPitch.get_bound()
-                    probs[:, :, begin:end] += 1
-                    begin, end = Tokenizer.TokenNoteOff.get_bound()
-                    probs[:, :, begin:end] += 1
-                elif i % 3 == 2:  # Velocity token
-                    begin, end = Tokenizer.TokenVel.get_bound()
-                    probs[:, :, begin:end] += 1
-                    probs[
-                        :, :, TOKEN_BLANK
-                    ] += 1  # Force the velocity token to be a valid token
+            # (B) Apply “forcing” as **logit biases** (equivalent to adding log-prob mass)
+            if getattr(self.config, "hybrid_global_local_cross_attn", False):
+                if i % 3 == 0:  # Onset or EOS
+                    b, e = Tokenizer.TokenOnset.get_bound()
+                    logits_step[:, :, b:e] += 1.0
+                    logits_step[:, :, self.eos_token] += 1.0
+                elif i % 3 == 1:  # Pitch or NoteOff
+                    b1, e1 = Tokenizer.TokenPitch.get_bound()
+                    logits_step[:, :, b1:e1] += 1.0
+                    b2, e2 = Tokenizer.TokenNoteOff.get_bound()
+                    logits_step[:, :, b2:e2] += 1.0
+                elif i % 3 == 2:  # Velocity or BLANK
+                    b, e = Tokenizer.TokenVel.get_bound()
+                    logits_step[:, :, b:e] += 1.0
+                    logits_step[:, :, TOKEN_BLANK] += 1.0
 
-            token_probs = probs
-            curr_token = torch.argmax(token_probs, dim=-1)  # [batch_size, pred_step]
+            curr_token = logits_step.argmax(dim=-1)  # [batch_size, pred_step]
+
             gen_tokens[:, i : i + pred_step] = curr_token
             max_num_tokens += pred_step
             # Check  EOS
-            eos_flags = eos_flags | (curr_token[:, 0] == self.eos_token)
-            if berak_on_eos and eos_flags.int().sum() == batch_size:
+            eos_flags = eos_flags | (curr_token[:, 0] == self.eos_token).to(
+                eos_flags.dtype
+            )
+            if break_on_eos and eos_flags.int().sum() == batch_size:
                 break
 
             # Update current frame index
@@ -525,3 +599,55 @@ class Transformer(nn.Module):
                     curr_frame_index[b] = min(T - 1, onset_frame_index)
 
         return gen_tokens  # [:, :max_num_tokens]
+
+    def _collect_ctx(self, add_mem_dict, return_mask=False):
+        mems, masks = [], []
+        if "beat" in add_mem_dict and add_mem_dict["beat"] is not None:
+            mems.append(add_mem_dict["beat"])
+            if return_mask and "beat_mask" in add_mem_dict:
+                masks.append(add_mem_dict["beat_mask"])
+        if "bar" in add_mem_dict and add_mem_dict["bar"] is not None:
+            mems.append(add_mem_dict["bar"])
+            if return_mask and "bar_mask" in add_mem_dict:
+                masks.append(add_mem_dict["bar_mask"])
+        if not mems:
+            return (None, None) if return_mask else None
+        C = torch.cat(mems, dim=1)  # [B,Kc,D]
+        if not return_mask or not masks:
+            return (C, None) if return_mask else C
+        M = torch.cat(masks, dim=1)  # [B,Kc], 1=valid, 0=pad
+        return C, M
+
+    def _fuse_context_concat(self, E_main, add_mem_dict):
+        """Mean over time for each ctx stream, concat on D, project to D, gated residual."""
+        B, T, D = E_main.shape
+        tiles = [E_main]
+        if "beat" in add_mem_dict:
+            c = add_mem_dict["beat"].mean(dim=1, keepdim=True).expand(B, T, D)
+            tiles.append(c)
+        if "bar" in add_mem_dict:
+            c = add_mem_dict["bar"].mean(dim=1, keepdim=True).expand(B, T, D)
+            tiles.append(c)
+        if len(tiles) == 1:
+            return E_main
+        E_cat = torch.cat(tiles, dim=-1)  # [B, T, n*D]
+        if E_cat.size(-1) == 2 * D:
+            fused = self._fuse2(E_cat)
+        else:
+            fused = self._fuse3(E_cat)
+        fused = self._fuse_ln(self._fuse_drop(fused))
+        return E_main + self._fuse_alpha * fused
+
+    def _fuse_context_attn(self, E_main, add_mem_dict):
+        C, M = self._collect_ctx(add_mem_dict, return_mask=True)  # [B,Kc,D], [B,Kc]
+        if C is None:
+            return E_main
+        kpm = None
+        if M is not None:
+            # MultiheadAttention expects True where positions are PAD
+            kpm = ~(M > 0)  # [B,Kc]
+        attn_out, _ = self._ctx_mha(
+            E_main, C, C, key_padding_mask=kpm, need_weights=False
+        )
+        attn_out = self._ctx_ln(self._ctx_drop(attn_out))
+        return E_main + self._attn_alpha * attn_out

@@ -11,7 +11,8 @@ from torch.nn.utils.rnn import pad_sequence
 import torch.nn.functional as Functional
 import librosa
 import librosa.display
-import music21
+
+# import music21
 import torchaudio
 
 import hashlib
@@ -252,10 +253,6 @@ class SingleWavDataset(Dataset):
 
         # Limit the token len to max_len
         if sel_tokens.size()[0] > max_token_len:
-            print(
-                "Decoder target length(%d) > max(%d)."
-                % (sel_tokens.size()[0], max_token_len)
-            )
             sel_tokens = sel_tokens[:max_token_len]
 
         seq_len = sel_tokens.size()[0]
