@@ -1,0 +1,7 @@
+# @package _global_
+model:
+  use_context: false
+  context_mode: null
+  context_fuse: null
+training:
+  notes: NoContext

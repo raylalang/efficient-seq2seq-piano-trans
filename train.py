@@ -11,7 +11,8 @@ from torch.utils.data import DataLoader
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
-# from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data.distributed import DistributedSampler
+
 # from torch.optim.lr_scheduler import CosineAnnealingLR
 
 
@@ -26,7 +27,8 @@ from model.context_poolers import BeatPooler, BarPooler
 
 from data.dataset_Audio2Midi import Audio2Midi_Dataset
 from data.collate import collate_with_context
-import data.symbolic_music_tokenizer as sm_tokenizer
+
+# import data.symbolic_music_tokenizer as sm_tokenizer
 
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger, TensorBoardLogger
@@ -83,7 +85,6 @@ import importlib
 # from itertools import chain
 from tqdm import tqdm
 from glob import glob
-import pandas as pd
 
 # from line_profiler import LineProfiler
 # from symusic import Score, TimeUnit
@@ -160,6 +161,8 @@ class MT3Trainer(pl.LightningModule):
                 ),
             )
             self.bar_pooler = BarPooler(d_model=self.config.model.emb_dim)
+
+        self._legacy_opt_states = None
 
     def forward(
         self,
@@ -555,7 +558,8 @@ class MT3Trainer(pl.LightningModule):
                     except Exception as _e:
                         pass  # model-only if optimizer not available here
 
-                    torch.save(state, checkpoint_path)
+                    # torch.save(state, checkpoint_path)
+                    self.trainer.save_checkpoint(checkpoint_path)
                     if hasattr(self, "previous_cpt_path"):
                         if self.prev_checkpoint_step in [10000, 50000, 100000, 200000]:
                             pass
@@ -583,6 +587,16 @@ class MT3Trainer(pl.LightningModule):
 
         return loss_dict["loss"]
 
+    def on_train_epoch_start(self):
+        # ensure new RNG split each epoch for DistributedSampler(s)
+        dls = getattr(getattr(self.trainer, "train_dataloader", None), "loaders", None)
+        if isinstance(dls, dict):
+            for dl in dls.values():
+                s = getattr(dl, "sampler", None)
+                if hasattr(s, "set_epoch"):
+                    s.set_epoch(self.current_epoch)
+        self.features_extracter = self.features_extracter.to(self.device)
+
     @rank_zero_only
     def on_train_epoch_end(
         self,
@@ -590,19 +604,20 @@ class MT3Trainer(pl.LightningModule):
         # Save checkpoint.
         cpt_dir = os.path.join(os.path.join(self.logger.save_dir, "cpt"))
         os.system("mkdir -p %s" % cpt_dir)
-        torch.save(
-            {
-                "state_dict": self.model.state_dict(),
-                "global_step": int(self.global_step),
-                "epoch": int(self.current_epoch),
-                "optimizer_states": (
-                    [opt.state_dict() for opt in self.trainer.optimizers]
-                    if self.trainer.optimizers
-                    else []
-                ),
-            },
-            os.path.join(cpt_dir, "latest.ckpt"),
-        )
+        # torch.save(
+        #     {
+        #         "state_dict": self.model.state_dict(),
+        #         "global_step": int(self.global_step),
+        #         "epoch": int(self.current_epoch),
+        #         "optimizer_states": (
+        #             [opt.state_dict() for opt in self.trainer.optimizers]
+        #             if self.trainer.optimizers
+        #             else []
+        #         ),
+        #     },
+        #     os.path.join(cpt_dir, "latest.ckpt"),
+        # )
+        self.trainer.save_checkpoint(os.path.join(cpt_dir, "latest.ckpt"))
 
         txt_path = cpt_dir + "/latest_epoch.txt"
         with open(txt_path, "w") as f:
@@ -613,6 +628,14 @@ class MT3Trainer(pl.LightningModule):
 
     def on_fit_start(self):
         self.features_extracter = self.features_extracter.to(self.device)
+        # --- legacy optimizer state restore (safe) ---
+        if self._legacy_opt_states:
+            try:
+                for opt, st in zip(self.trainer.optimizers, self._legacy_opt_states):
+                    opt.load_state_dict(st)
+            except Exception as e:
+                print(f"[warn] failed to load legacy optimizer states: {e}")
+            self._legacy_opt_states = None
 
     @torch.no_grad()
     def on_validation_start(self):
@@ -750,7 +773,8 @@ class MT3Trainer(pl.LightningModule):
         decoder_output_tokens = self.model.generate(
             encoder_inputs,
             target_seq_length=n_tokens,
-            break_on_eos=True,
+            # break_on_eos=True,
+            break_on_eos=False,
             global_rank=self.global_rank,
             additional_encoder_memory=additional_encoder_memory,
         )
@@ -759,14 +783,31 @@ class MT3Trainer(pl.LightningModule):
         generate_token_len = max(1, decoder_output_tokens.size(1))
         tokens_per_sec = generate_token_len / dur_time_sec
 
-        # get_output_seq_lens
-        output_eos_tokens_flag = decoder_output_tokens
-        output_eos_tokens_flag = (
-            output_eos_tokens_flag == sm_tokenizer.EOS
-        ).int() * sm_tokenizer.EOS
-        output_seq_lens = sequence_processing.get_sequence_lengths(
-            output_eos_tokens_flag, sm_tokenizer.EOS
-        )
+        # # get_output_seq_lens
+        # output_eos_tokens_flag = decoder_output_tokens
+        # output_eos_tokens_flag = (
+        #     output_eos_tokens_flag == sm_tokenizer.EOS
+        # ).int() * sm_tokenizer.EOS
+        # output_seq_lens = sequence_processing.get_sequence_lengths(
+        #     output_eos_tokens_flag, sm_tokenizer.EOS
+        # )
+        # Trim to FIRST EOS per-sample for scoring (fallback = full length if no EOS)
+        out = decoder_output_tokens  # [B, T]
+        eos_id = sm_tokenizer.EOS
+        eos_mask = out.eq(eos_id)  # [B, T]
+        has_eos = eos_mask.any(dim=1)  # [B]
+        first_eos = eos_mask.float().argmax(dim=1).to(torch.long)  # [B]
+        full_len = torch.full_like(first_eos, out.size(1))  # [B]
+        output_seq_lens = torch.where(has_eos, first_eos, full_len)
+
+        if self.global_rank == 0 and batch_idx < 3:
+            T_enc = int(encoder_inputs.size(1))
+            T_tgt = int(n_tokens)
+            T_out_trimmed = int(output_seq_lens.float().mean().round().item())
+            print(
+                f"[gen] enc_T={T_enc} tgt={T_tgt} out={T_out_trimmed} ratio={T_out_trimmed/max(1,T_tgt):.3f}"
+            )
+
         target_sequence_lens = batch["decoder_targets_len"]
         assert len(output_seq_lens) == len(
             target_sequence_lens
@@ -986,6 +1027,12 @@ class MT3Trainer(pl.LightningModule):
 
             metric_dict["target_length"].append(target_len)
             target_midi_basename = os.path.basename(target_midi_path)
+
+            metric_dict["output_length"].append(len(concat_output_tokens))
+            metric_dict["out_to_tgt_ratio"].append(
+                len(concat_output_tokens) / max(1, len(concat_target_tokens))
+            )
+
             metric_dict["midi_path"].append(target_midi_basename)
 
             json_path = (
@@ -1054,27 +1101,38 @@ class MT3Trainer(pl.LightningModule):
         else:
             raise "Unknown dataset:" + self.config.data.dataset_name
 
-        sampler = None
-
         # Set dataloader for multiple datasets
         n_datasets = len(self.config.data.dataset_dirs)
         assert (
             self.config.training.batch % n_datasets == 0
         ), "Batch size should be divisible by the number of datasets."
-        iterables = {
-            str(i): DataLoader(
+        world_size = getattr(self.trainer, "world_size", 1)
+        rank = getattr(self, "global_rank", 0)
+        iterables = {}
+        for i, dataset in enumerate(datasets):
+            sampler = (
+                DistributedSampler(
+                    dataset,
+                    num_replicas=world_size,
+                    rank=rank,
+                    shuffle=True,
+                    drop_last=True,
+                )
+                if world_size > 1
+                else None
+            )
+            shuffle = False if sampler is not None else True
+            iterables[str(i)] = DataLoader(
                 dataset,
                 batch_size=self.config.training.batch // n_datasets,
                 num_workers=self.config.training.num_workers // n_datasets,
                 sampler=sampler,
-                shuffle=True,
+                shuffle=shuffle,
                 collate_fn=collate_with_context,
                 persistent_workers=(self.config.training.num_workers > 0),
                 pin_memory=True,
                 prefetch_factor=4,
             )
-            for i, dataset in enumerate(datasets)
-        }
         combined_loader = CombinedLoader(iterables, mode="max_size_cycle")
         return combined_loader
 
@@ -1098,28 +1156,38 @@ class MT3Trainer(pl.LightningModule):
         else:
             raise "Unknown dataset:" + self.config.data.dataset_name
 
-        sampler = None
-        shuffle = False
-
         # Set dataloader for multiple datasets
         n_datasets = len(self.config.data.dataset_dirs)
         assert (
             self.config.training.batch % n_datasets == 0
         ), "Batch size should be divisible by the number of datasets."
-        iterables = {
-            str(i): DataLoader(
+        world_size = getattr(self.trainer, "world_size", 1)
+        rank = getattr(self, "global_rank", 0)
+        iterables = {}
+        for i, dataset in enumerate(datasets):
+            sampler = (
+                DistributedSampler(
+                    dataset,
+                    num_replicas=world_size,
+                    rank=rank,
+                    shuffle=False,
+                    drop_last=False,
+                )
+                if world_size > 1
+                else None
+            )
+            iterables[str(i)] = DataLoader(
                 dataset,
                 batch_size=self.config.training.batch // n_datasets,
                 num_workers=self.config.training.num_workers // n_datasets,
                 sampler=sampler,
-                shuffle=shuffle,
+                shuffle=False,
                 collate_fn=collate_with_context,
-                persistent_workers=(self.config.training.num_workers > 0),
-                pin_memory=True,
-                prefetch_factor=4,
+                # persistent_workers=(self.config.training.num_workers > 0),
+                persistent_workers=False,
+                pin_memory=False,
+                prefetch_factor=2,
             )
-            for i, dataset in enumerate(datasets)
-        }
         combined_loader = CombinedLoader(iterables, mode="max_size_cycle")
         return combined_loader
 
@@ -1143,14 +1211,30 @@ class MT3Trainer(pl.LightningModule):
         else:
             raise "Unknown dataset:" + self.config.data.dataset_name
 
+        world_size = getattr(self.trainer, "world_size", 1)
+        rank = getattr(self, "global_rank", 0)
+        sampler = (
+            DistributedSampler(
+                test_data,
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=False,
+                drop_last=False,
+            )
+            if world_size > 1
+            else None
+        )
         testloader = DataLoader(
             test_data,
             batch_size=self.config.training.batch_test,
             num_workers=self.config.training.num_workers,
+            sampler=sampler,
+            shuffle=False,
             collate_fn=collate_with_context,
-            persistent_workers=(self.config.training.num_workers > 0),
-            pin_memory=True,
-            prefetch_factor=4,
+            # persistent_workers=(self.config.training.num_workers > 0),
+            persistent_workers=False,
+            pin_memory=False,
+            prefetch_factor=2,
         )
         return testloader
 
@@ -1160,16 +1244,22 @@ def Init_rank_zero_only(log_dir):
     os.environ["MT3-LOGGER-PATH"] = log_dir
 
 
+def _is_lightning_ckpt(path: str) -> bool:
+    try:
+        obj = torch.load(path, map_location="cpu")
+    except Exception:
+        return False
+    return isinstance(obj, dict) and (
+        "pytorch-lightning_version" in obj or "loops" in obj
+    )
+
+
 @hydra.main(config_path="config", config_name="main_config", version_base=None)
 def my_main(config: OmegaConf):
     torch.cuda.empty_cache()
     gc.collect()
 
-    # if socket.gethostname() == "sacs14":
-    #     config.data.dataset_dir='/nvme1/wei/data/maestro-v3.0.0/'
-
-    ####################################################
-    # Get log dir.
+    # Get log dir
     if config.training.log_dir is None:
         model_name = config.model.model_name
         time_str = datetime.now().strftime("%y%m%d-%H%M%S")
@@ -1196,19 +1286,54 @@ def my_main(config: OmegaConf):
     # Create model.
     model = MT3Trainer(config)
     print(model)
+
     # Load checkpoint.
-    if config.model.checkpoint_path is None:
-        assert (
-            config.model.froze_encoder == False
-        ), "If you want to train from scratch, please set config.model.froze_encoder to False and config.model.checkpoint_path to None."
-    else:
-        ckpt = torch.load(config.model.checkpoint_path, map_location="cpu")
-        state_dict = ckpt.get("state_dict", ckpt)  # supports both formats
-        if config.model.checkpoint_ignore_layers is not None:
-            for key in config.model.checkpoint_ignore_layers:
-                if key in state_dict:
-                    del state_dict[key]
-        model.model.load_state_dict(state_dict, strict=config.model.strict_checkpoint)
+    # if config.model.checkpoint_path is None:
+    #     assert (
+    #         config.model.froze_encoder == False
+    #     ), "If you want to train from scratch, please set config.model.froze_encoder to False and config.model.checkpoint_path to None."
+    # else:
+    #     ckpt = torch.load(config.model.checkpoint_path, map_location="cpu")
+    #     state_dict = ckpt.get("state_dict", ckpt)  # supports both formats
+    #     if config.model.checkpoint_ignore_layers is not None:
+    #         for key in config.model.checkpoint_ignore_layers:
+    #             if key in state_dict:
+    #                 del state_dict[key]
+    #     model.model.load_state_dict(state_dict, strict=config.model.strict_checkpoint)
+
+    resume_ckpt = getattr(config.training, "resume_from_ckpt", None)
+    init_ckpt = getattr(config.model, "checkpoint_path", None)
+
+    ckpt_path_for_trainer = None
+    if resume_ckpt:  # exact resume from a Lightning checkpoint (recommended & exact)
+        if _is_lightning_ckpt(str(resume_ckpt)):
+            ckpt_path_for_trainer = str(resume_ckpt)
+        else:
+            raise ValueError(
+                f"training.resume_from_ckpt={resume_ckpt} is not a Lightning checkpoint; "
+                "exact resume requires a Lightning ckpt produced by save_checkpoint."
+            )
+    elif init_ckpt:  # legacy torch.save load (weights + optimizer states only, safe)
+        ckpt_obj = torch.load(init_ckpt, map_location="cpu")
+        state_dict = ckpt_obj.get("state_dict", ckpt_obj)
+        # allow Lightning-style prefixes
+        if any(k.startswith("model.") for k in state_dict.keys()):
+            state_dict = {k.replace("model.", "", 1): v for k, v in state_dict.items()}
+
+        ignore = set(getattr(config.model, "checkpoint_ignore_layers", []) or [])
+        for k in list(state_dict.keys()):
+            if k in ignore:
+                del state_dict[k]
+        strict = bool(getattr(config.model, "strict_checkpoint", True))
+        model.model.load_state_dict(state_dict, strict=strict)
+
+        # try to restore optimizer states safely later during on_fit_start
+        legacy_opts = ckpt_obj.get("optimizer_states", None)
+        if legacy_opts:
+            model._legacy_opt_states = legacy_opts  # Lightning will have optimizers initialized by on_fit_start
+
+        # NOTE: we DO NOT force set epoch/global_step here: doing that without PL’s loop
+        # state is brittle. Exact resume is guaranteed only for Lightning ckpts.
 
     # model.model = torch.compile(model.model)
 
@@ -1293,7 +1418,7 @@ def my_main(config: OmegaConf):
         num_sanity_val_steps=0,
     )
 
-    trainer.fit(model)
+    trainer.fit(model, ckpt_path=ckpt_path_for_trainer)
 
 
 if __name__ == "__main__":

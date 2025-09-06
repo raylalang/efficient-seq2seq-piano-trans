@@ -1,0 +1,10 @@
+defaults:
+  - experiment_T5_V0
+  - variant: BeatBarAttn
+data:
+  n_frames: 1024
+  max_token_length: 2048
+  dataset_dir: /nvme1/ray/maestro-v3.0.0
+  dataset_dirs: [/nvme1/ray/maestro-v3.0.0]
+training:
+  online_testing: false

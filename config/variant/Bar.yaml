@@ -1,0 +1,11 @@
+# @package _global_
+model:
+  use_context: true
+  context_mode: bar
+  context_fuse: concat
+  context_bars: 4
+  beats_per_bar: 4
+  beat_sigma_frames: 6
+  add_tempo_features: false
+training:
+  notes: BarContext
