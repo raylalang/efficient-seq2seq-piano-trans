@@ -48,3 +48,6 @@ midi_align
 dataset/
 dataset/asap-dataset/cache
 dataset/asap-dataset-note-alignment/*
+
+*.log
+eval_work
