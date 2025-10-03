@@ -16,7 +16,7 @@
   dtype: torch.float32
   strict_checkpoint: True
   checkpoint_path:
-  checkpoint_ignore_layres: []
+  checkpoint_ignore_layers: []
   # encoder
   encoder_input_dim: 512
   cnn_channel: 4

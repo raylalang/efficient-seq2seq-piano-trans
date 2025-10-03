@@ -1057,8 +1057,8 @@ def my_main(config: OmegaConf):
         state_dict = torch.load(
             config.model.checkpoint_path
         )  # , map_location=torch.device('cpu')
-        if not config.model.checkpoint_ignore_layres is None:
-            for key in config.model.checkpoint_ignore_layres:
+        if not config.model.checkpoint_ignore_layers is None:
+            for key in config.model.checkpoint_ignore_layers:
                 del state_dict[key]
 
         model.model.load_state_dict(state_dict, strict=config.model.strict_checkpoint)
