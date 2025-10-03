@@ -5,19 +5,19 @@ import torch
 import pytorch_lightning as pl
 from pytorch_lightning.strategies import DDPStrategy
 import os
-from collections import defaultdict
 
 
 @hydra.main(config_path="config", config_name="main_config", version_base=None)
 def my_main(config: OmegaConf):
-    # Create model.
+    # Force test mode
     config.training.mode = "test"
+
+    # Build module
     model = MT3Trainer(config)
     print(model)
-    # Load checkpoint.
-    state_dict = torch.load(
-        config.model.checkpoint_path
-    )  # , map_location=torch.device('cpu')
+
+    # Load checkpoint
+    state_dict = torch.load(config.model.checkpoint_path)
 
     # Remove keys that are in the ignore list.
     for key in list(state_dict.keys()):
@@ -27,16 +27,20 @@ def my_main(config: OmegaConf):
 
     model.model.load_state_dict(state_dict, strict=True)
 
-    trainer = pl.Trainer(
-        logger=[],
-        devices=config.devices,  # 1 [1,2, 4, 5, 6,7]
-        accelerator=config.accelerator,  # "gpu"
-        strategy=DDPStrategy(find_unused_parameters=True),
+    strategy = (
+        DDPStrategy(find_unused_parameters=True) if config.devices > 1 else "auto"
     )
 
-    model.test_output_dir = config.model.checkpoint_path + "_test"
-    os.makedirs(model.test_output_dir, exist_ok=True)
-    trainer.test(model.eval())
+    trainer = pl.Trainer(
+        logger=[],
+        devices=config.devices,
+        accelerator=config.accelerator,
+        strategy=strategy,
+        precision="16-mixed",
+        num_sanity_val_steps=0,
+    )
+
+    trainer.test(model)
 
 
 if __name__ == "__main__":
