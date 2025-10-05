@@ -14,22 +14,24 @@ from omegaconf import OmegaConf
 import hydra
 from model.T5 import Transformer
 from model.HPPNet import HPPNet
-from model.GPT import GPT
+
+# from model.GPT import GPT
 from model.context_poolers import BeatPooler, BarPooler
 
 
 from data.dataset_Audio2Midi import Audio2Midi_Dataset
 import pytorch_lightning as pl
-from pytorch_lightning.loggers import WandbLogger, TensorBoardLogger
+from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from pytorch_lightning.trainer.states import RunningStage, TrainerFn
 from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.utilities.combined_loader import CombinedLoader
-import wandb
+
 import json
 import pandas as pd
 from torch.utils.data import IterableDataset, Dataset, ConcatDataset
-import editdistance
+
+# import editdistance
 
 # from torchaudio.transforms import MelSpectrogram
 
@@ -57,7 +59,6 @@ from mir_eval.transcription_velocity import (
 )
 import mir_eval
 
-import wandb
 from datetime import datetime
 import time as std_time
 import socket
@@ -68,7 +69,8 @@ from itertools import chain
 from tqdm import tqdm
 from glob import glob
 import pandas as pd
-from line_profiler import LineProfiler
+
+# from line_profiler import LineProfiler
 from symusic import Score, TimeUnit
 from collections import defaultdict
 
@@ -1066,21 +1068,6 @@ def my_main(config: OmegaConf):
     # model.model = torch.compile(model.model)
 
     # Create logger.
-    if "DEBUG" in os.environ and os.environ["DEBUG"] == "True":
-        wandb_logger = WandbLogger(
-            name=experiment_name + config.training.notes,
-            project="mt3-score-pytorch-debug",
-            offline=config.training.debug_log_offline,
-            save_dir=log_dir,
-        )  # , rank_zero_only=True
-    else:
-        wandb_logger = WandbLogger(
-            name=experiment_name + config.training.notes,
-            project="AMT-audio-to-midi",
-            offline=False,
-            save_dir=log_dir,
-            notes=config.training.notes,
-        )  # , rank_zero_only=True
     tensorboard_logger = TensorBoardLogger(save_dir=log_dir)
 
     # Save informations to log dir.
@@ -1117,9 +1104,8 @@ def my_main(config: OmegaConf):
         config_dict = OmegaConf.to_container(config)
         if "CUDA_VISIBLE_DEVICES" in os.environ:
             config_dict["training"]["cuda"] = os.environ["CUDA_VISIBLE_DEVICES"]
-        wandb_logger.log_hyperparams(config_dict)
 
-    logger_list = [wandb_logger, tensorboard_logger]
+    logger_list = [tensorboard_logger]
     if config.training.mode != "train":
         logger_list = []
     trainer = pl.Trainer(
