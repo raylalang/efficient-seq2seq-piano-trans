@@ -1,7 +1,6 @@
 from train import MT3Trainer
 import hydra
 from omegaconf import OmegaConf
-import torch
 import pytorch_lightning as pl
 from pytorch_lightning.strategies import DDPStrategy
 import os
@@ -12,23 +11,19 @@ def my_main(config: OmegaConf):
     # Force test mode
     config.training.mode = "test"
 
-    # Build module
-    model = MT3Trainer(config)
+    # Safety: require a proper Lightning checkpoint
+    ckpt_path = config.model.checkpoint_path
+    assert ckpt_path and os.path.exists(
+        ckpt_path
+    ), f"Missing Lightning ckpt: {ckpt_path}"
+
+    # Build module *from* Lightning checkpoint (loads weights automatically)
+    model = MT3Trainer.load_from_checkpoint(ckpt_path, config=config)
     print(model)
 
-    # Load checkpoint
-    state_dict = torch.load(config.model.checkpoint_path)
-
-    # Remove keys that are in the ignore list.
-    for key in list(state_dict.keys()):
-        if key in config.model.checkpoint_ignore_layers:
-            print(f"Removing key {key} from state_dict")
-            del state_dict[key]
-
-    model.model.load_state_dict(state_dict, strict=True)
-
+    # Strategy: DDP only if >1 device; otherwise let Lightning pick.
     strategy = (
-        DDPStrategy(find_unused_parameters=True) if config.devices > 1 else "auto"
+        DDPStrategy(find_unused_parameters=True) if int(config.devices) > 1 else "auto"
     )
 
     trainer = pl.Trainer(
@@ -38,6 +33,7 @@ def my_main(config: OmegaConf):
         strategy=strategy,
         precision="16-mixed",
         num_sanity_val_steps=0,
+        enable_checkpointing=False,
     )
 
     trainer.test(model)

@@ -1,9 +1,9 @@
-# nohup bash ./train_V0.sh > train_V0.log 2>&1 &
+# nohup bash ./train_V0_old.sh > train_V0_old.log 2>&1 &
 
-export CUDA_VISIBLE_DEVICES=6,7
+export CUDA_VISIBLE_DEVICES=3,4
 config=experiment_T5_V0
 
-python train.py --config-name=$config\
+python train_old.py --config-name=$config\
   accelerator=gpu\
   devices=2\
   +model.context_mode=null\

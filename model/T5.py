@@ -289,7 +289,7 @@ class Transformer(nn.Module):
 
     # @profile_cuda_memory
     def generate(
-        self, encoder_inputs, target_seq_length=1024, berak_on_eos=False, global_rank=0
+        self, encoder_inputs, target_seq_length=1024, break_on_eos=False, global_rank=0
     ):
         self.decoder.initialize_decoder_cache()
 
@@ -504,7 +504,7 @@ class Transformer(nn.Module):
             max_num_tokens += pred_step
             # Check  EOS
             eos_flags = eos_flags | (curr_token[:, 0] == self.eos_token)
-            if berak_on_eos and eos_flags.int().sum() == batch_size:
+            if break_on_eos and eos_flags.int().sum() == batch_size:
                 break
 
             # Update current frame index
