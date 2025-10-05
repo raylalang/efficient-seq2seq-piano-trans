@@ -33,7 +33,7 @@ model:
   # froze_encoder: true
   strict_checkpoint: false
 
-  checkpoint_ignore_layres: [
+  checkpoint_ignore_layers: [
     "decoder.dense_onset_by_AttnMap.intermediate_layers.0.weight", 
     "decoder.dense_onset_by_AttnMap.intermediate_layers.0.bias", 
     "decoder.dense_onset_by_AttnMap.dense_layer.weight", 
