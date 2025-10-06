@@ -49,6 +49,8 @@ dataset/
 dataset/asap-dataset/cache
 dataset/asap-dataset-note-alignment/*
 
-dataset
 log
 *.log
+tmp*
+*.drawio
+*.csv
