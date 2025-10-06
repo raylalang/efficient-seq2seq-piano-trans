@@ -46,3 +46,7 @@ midi_align
 *.score.json
 dataset/asap-dataset/cache
 dataset/asap-dataset-note-alignment/*
+
+dataset
+log
+*.log
