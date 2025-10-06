@@ -7,9 +7,14 @@ import torch.nn as nn
 import torch.nn.functional as Functional
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
-from torch.optim.lr_scheduler import CosineAnnealingLR
-import torchvision
+
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
+# from torch.utils.data.distributed import DistributedSampler
+# from torch.optim.lr_scheduler import CosineAnnealingLR
+
+
 from omegaconf import OmegaConf
 import hydra
 from model.T5 import Transformer
@@ -20,10 +25,14 @@ from model.context_poolers import BeatPooler, BarPooler
 
 
 from data.dataset_Audio2Midi import Audio2Midi_Dataset
+from data.collate import collate_with_context
+import data.symbolic_music_tokenizer as sm_tokenizer
+
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
-from pytorch_lightning.trainer.states import RunningStage, TrainerFn
+
+# from pytorch_lightning.trainer.states import RunningStage, TrainerFn
 from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.utilities.combined_loader import CombinedLoader
 
@@ -39,7 +48,8 @@ from torch.utils.data import IterableDataset, Dataset, ConcatDataset
 from data.constants import *
 import gc
 import os
-from sklearn.metrics import accuracy_score
+
+# from sklearn.metrics import accuracy_score
 import matplotlib.pyplot as plt
 from data.mel import MelSpectrogram
 
@@ -51,8 +61,8 @@ import torchaudio
 import metrics.transcription_metrics as transcription_metrics
 import numpy as np
 
-from mir_eval.util import midi_to_hz
-from mir_eval.multipitch import evaluate as evaluate_frames
+# from mir_eval.util import midi_to_hz
+# from mir_eval.multipitch import evaluate as evaluate_frames
 from mir_eval.transcription import precision_recall_f1_overlap as evaluate_notes
 from mir_eval.transcription_velocity import (
     precision_recall_f1_overlap as evaluate_notes_with_velocity,
@@ -62,16 +72,19 @@ import mir_eval
 from datetime import datetime
 import time as std_time
 import socket
-from torch.utils.tensorboard import SummaryWriter
-from itertools import cycle
+
+# from torch.utils.tensorboard import SummaryWriter
+
+# from itertools import cycle
 import importlib
-from itertools import chain
+
+# from itertools import chain
 from tqdm import tqdm
 from glob import glob
 import pandas as pd
 
 # from line_profiler import LineProfiler
-from symusic import Score, TimeUnit
+# from symusic import Score, TimeUnit
 from collections import defaultdict
 
 import visualize.transcription_visualizer as transcription_visualizer
@@ -203,7 +216,7 @@ class MT3Trainer(pl.LightningModule):
 
         self.log_time_event("backword_done")
         with torch.no_grad():
-            inputs = batch["inputs"]
+            inputs = batch["inputs"].to(self.device, non_blocking=True)
             inputs = self.features_extracter(inputs[:, :-1]).transpose(-1, -2)
             inputs = inputs.detach()
             if self.config.data.amplitude_to_db:
@@ -263,11 +276,12 @@ class MT3Trainer(pl.LightningModule):
 
             # Pool to beats/bars using beat times from the dataset
             cbt = batch["context_beat_times"]
-            beats_list = (
-                list(cbt)
-                if not isinstance(cbt, torch.Tensor)
-                else [cbt[b][cbt[b] > 0] for b in range(cbt.size(0))]
-            )
+            if isinstance(cbt, torch.Tensor):
+                beats_list = [
+                    cbt[b][cbt[b] >= 0] for b in range(cbt.size(0))
+                ]  # keep 0, drop -1 pads
+            else:
+                beats_list = list(cbt)
 
             beat_mem, beat_mask = self.beat_pooler(
                 ctx_encoded, beats_list
@@ -282,12 +296,30 @@ class MT3Trainer(pl.LightningModule):
                 self.config.model, "context_mode", "beat_bar"
             )  # beat|bar|beat_bar
             mems = []
-            if mode in ("beat", "beat_bar"):
-                mems.append(beat_mem)
-            if mode in ("bar", "beat_bar"):
-                mems.append(bar_mem)
-            if mems:
-                additional_encoder_memory = torch.cat(mems, dim=1)  # [B, K_add, D]
+            additional_encoder_memory = None
+            if mode in ("beat", "beat_bar") or mode in ("bar", "beat_bar"):
+                add = {}
+                if mode in ("beat", "beat_bar"):
+                    add["beat"] = beat_mem  # [B,Kb,D]
+                    add["beat_mask"] = beat_mask  # [B,Kb] 1=valid, 0=pad
+                if mode in ("bar", "beat_bar"):
+                    add["bar"] = bar_mem  # [B,Kbar,D]
+                    add["bar_mask"] = bar_mask  # [B,Kbar]
+                additional_encoder_memory = add
+
+        if (
+            additional_encoder_memory is not None
+            and self.global_rank == 0
+            and n_steps < 5
+        ):
+            if isinstance(additional_encoder_memory, dict):
+                bl = additional_encoder_memory.get("beat")
+                br = additional_encoder_memory.get("bar")
+                print(
+                    "context memory lens:",
+                    f"beat={0 if bl is None else bl.size(1)},",
+                    f"bar={0 if br is None else br.size(1)}",
+                )
 
         outputs_dict = self.forward(
             encoder_input_tokens=inputs,
@@ -298,6 +330,7 @@ class MT3Trainer(pl.LightningModule):
             encoder_decoder_mask=encoder_decoder_mask,
             additional_encoder_memory=additional_encoder_memory,
         )
+
         self.log_time_event("forward_done")
 
         # cal losses
@@ -498,12 +531,27 @@ class MT3Trainer(pl.LightningModule):
                     self.global_step in [1000, 2000, 3000, 4000, 5000, 8000, 10000]
                     or self.global_step % self.config.training.checking_steps == 0
                 ):
-                    cpt_dir = os.path.join(os.path.join(self.logger.save_dir, "cpt"))
-                    os.system("mkdir -p %s" % cpt_dir)
-                    checkpoint_path = (
-                        cpt_dir + "/steps_" + str(self.global_step) + ".ckpt"
+                    cpt_dir = os.path.join(self.logger.save_dir, "cpt")
+                    os.makedirs(cpt_dir, exist_ok=True)
+                    checkpoint_path = os.path.join(
+                        cpt_dir, f"steps_{self.global_step}.ckpt"
                     )
-                    torch.save(self.model.state_dict(), checkpoint_path)
+
+                    # FULL checkpoint: model + optimizer + epoch/step
+                    state = {
+                        "state_dict": self.model.state_dict(),
+                        "global_step": int(self.global_step),
+                        "epoch": int(self.current_epoch),
+                    }
+                    try:
+                        if self.trainer.optimizers:
+                            state["optimizer_states"] = [
+                                opt.state_dict() for opt in self.trainer.optimizers
+                            ]
+                    except Exception as _e:
+                        pass  # model-only if optimizer not available here
+
+                    torch.save(state, checkpoint_path)
                     if hasattr(self, "previous_cpt_path"):
                         if self.prev_checkpoint_step in [10000, 50000, 100000, 200000]:
                             pass
@@ -538,7 +586,20 @@ class MT3Trainer(pl.LightningModule):
         # Save checkpoint.
         cpt_dir = os.path.join(os.path.join(self.logger.save_dir, "cpt"))
         os.system("mkdir -p %s" % cpt_dir)
-        torch.save(self.model.state_dict(), cpt_dir + "/latest.ckpt")
+        torch.save(
+            {
+                "state_dict": self.model.state_dict(),
+                "global_step": int(self.global_step),
+                "epoch": int(self.current_epoch),
+                "optimizer_states": (
+                    [opt.state_dict() for opt in self.trainer.optimizers]
+                    if self.trainer.optimizers
+                    else []
+                ),
+            },
+            os.path.join(cpt_dir, "latest.ckpt"),
+        )
+
         txt_path = cpt_dir + "/latest_epoch.txt"
         with open(txt_path, "w") as f:
             f.write(
@@ -546,8 +607,12 @@ class MT3Trainer(pl.LightningModule):
                 % (self.current_epoch, self.global_step)
             )
 
+    def on_fit_start(self):
+        self.features_extracter = self.features_extracter.to(self.device)
+
     @torch.no_grad()
     def on_validation_start(self):
+        self.features_extracter = self.features_extracter.to(self.device)
 
         # Manually call test_steps (online testing).
         if (
@@ -570,6 +635,9 @@ class MT3Trainer(pl.LightningModule):
         return super().on_validation_start()
 
     @torch.no_grad()
+    def on_test_start(self):
+        self.features_extracter = self.features_extracter.to(self.device)
+
     def validation_step(self, batch, batch_idx, dataloader_idx=None):
         outputs_dict, targets_dict, loss_dict, metrics_dict = self.forward_step(
             batch, batch_idx, "validation", cal_metrics=True
@@ -615,12 +683,74 @@ class MT3Trainer(pl.LightningModule):
 
         # inference speed
         curr_time_sec = std_time.time()
+
+        additional_encoder_memory = None
+        if getattr(self.config.model, "use_context", False) and (
+            "context_audio" in batch
+        ):
+            ctx = batch["context_audio"]  # [B, n_wave]
+            with torch.no_grad():
+                ctx_feat = self.features_extracter(ctx[:, :-1]).transpose(
+                    -1, -2
+                )  # [B,Tc,F]
+                if self.config.data.amplitude_to_db:
+                    ctx_feat = torchaudio.transforms.AmplitudeToDB(top_db=80.0)(
+                        ctx_feat
+                    )
+
+            # Encode and pool to beats/bars
+            ctx_encoded = self.model.encode(
+                ctx_feat, enable_dropout=False
+            )  # [B, Tc, D]
+            cbt = batch["context_beat_times"]
+            if isinstance(cbt, torch.Tensor):
+                beats_list = [cbt[b][cbt[b] >= 0] for b in range(cbt.size(0))]
+            else:
+                beats_list = list(cbt)
+
+            beat_mem, beat_mask = self.beat_pooler(
+                ctx_encoded, beats_list
+            )  # [B,Kb,D], [B,Kb]
+            bar_mem, bar_mask = self.bar_pooler(
+                beat_mem,
+                beat_mask,
+                beats_per_bar=int(getattr(self.config.model, "beats_per_bar", 4)),
+            )
+
+            mode = getattr(self.config.model, "context_mode", "beat_bar")
+            additional_encoder_memory = None
+            if mode in ("beat", "beat_bar") or mode in ("bar", "beat_bar"):
+                add = {}
+                if mode in ("beat", "beat_bar"):
+                    add["beat"] = beat_mem  # [B,Kb,D]
+                    add["beat_mask"] = beat_mask  # [B,Kb] 1=valid, 0=pad
+                if mode in ("bar", "beat_bar"):
+                    add["bar"] = bar_mem  # [B,Kbar,D]
+                    add["bar_mask"] = bar_mask  # [B,Kbar]
+                additional_encoder_memory = add
+
+        if (
+            additional_encoder_memory is not None
+            and self.global_rank == 0
+            and batch_idx < 2
+        ):
+            if isinstance(additional_encoder_memory, dict):
+                bl = additional_encoder_memory.get("beat")
+                br = additional_encoder_memory.get("bar")
+                print(
+                    "context memory lens:",
+                    f"beat={0 if bl is None else bl.size(1)},",
+                    f"bar={0 if br is None else br.size(1)}",
+                )
+
         decoder_output_tokens = self.model.generate(
             encoder_inputs,
             target_seq_length=n_tokens,
             break_on_eos=True,
             global_rank=self.global_rank,
+            # additional_encoder_memory=additional_encoder_memory,
         )
+
         dur_time_sec = std_time.time() - curr_time_sec
         generate_token_len = max(1, decoder_output_tokens.size(1))
         tokens_per_sec = generate_token_len / dur_time_sec
@@ -670,44 +800,42 @@ class MT3Trainer(pl.LightningModule):
             }
         )
 
-        # On master rank, process or aggregate the gathered outputs as needed
-        if self.global_rank == 0:
-            # => [n_rank, B, ...]
-            world_size, B, T = gather_data["output_tokens"].size()
+        # normalize shapes for single-GPU all_gather
+        out_tokens = gather_data["output_tokens"]
 
-            # assert len(output_seq_lens) == B * world_size #
+        # In single-GPU, Lightning returns tensors without a world dim (e.g., [B, T]).
+        # Add a fake rank dim so everything becomes [1, B, ...] and the code below
+        # can treat single-GPU and DDP the same way.
+        if out_tokens.ndim == 2:  # [B, T] -> [1, B, T]
+            for k, v in list(gather_data.items()):
+                if isinstance(v, torch.Tensor) and v.size(0) == max_batch_size:
+                    gather_data[k] = v.unsqueeze(0)
+            out_tokens = gather_data["output_tokens"]
+
+        world_size, B, T = out_tokens.size()
+
+        # Aggregate only on rank zero (Lightning-idiomatic)
+        if self.global_rank == 0:
             for w in range(world_size):
                 for b in range(B):
-                    audio_id = gather_data["audio_ids"][w][b].item()
-                    if audio_id < 0:  # Skip padding audio_id
+                    audio_id = int(gather_data["audio_ids"][w][b])
+                    if audio_id < 0:
                         continue
-                    target_len_b = gather_data["target_tokens_lens"][w][b].item()
-                    output_len_b = gather_data["output_tokens_lens"][w][b].item()
+                    tgt_len = int(gather_data["target_tokens_lens"][w][b])
+                    out_len = int(gather_data["output_tokens_lens"][w][b])
 
                     audio_name = "".join(
-                        [
-                            chr(x)
-                            for x in gather_data["audio_name"][w][b]
-                            .detach()
-                            .cpu()
-                            .numpy()
-                        ]
+                        [chr(x) for x in gather_data["audio_name"][w][b].cpu().numpy()]
                     ).strip()
                     midi_path = "".join(
-                        [
-                            chr(x)
-                            for x in gather_data["midi_path"][w][b]
-                            .detach()
-                            .cpu()
-                            .numpy()
-                        ]
+                        [chr(x) for x in gather_data["midi_path"][w][b].cpu().numpy()]
                     ).strip()
 
                     target_tokens_i = (
-                        gather_data["target_tokens"][w][b, :target_len_b].cpu().numpy()
+                        gather_data["target_tokens"][w][b, :tgt_len].cpu().numpy()
                     )
                     output_tokens_i = (
-                        gather_data["output_tokens"][w][b, :output_len_b].cpu().numpy()
+                        gather_data["output_tokens"][w][b, :out_len].cpu().numpy()
                     )
 
                     self.test_outputs_dict[audio_id].append(
@@ -716,10 +844,10 @@ class MT3Trainer(pl.LightningModule):
                             "output_tokens": output_tokens_i.tolist(),
                             "audio_name": audio_name,
                             "midi_path": midi_path,
-                            "frame_offsets": gather_data["frame_offsets"][w][b].item(),
+                            "frame_offsets": int(gather_data["frame_offsets"][w][b]),
                             "audio_ids": audio_id,
-                            "target_tokens_lens": target_len_b,
-                            "output_tokens_lens": output_len_b,
+                            "target_tokens_lens": tgt_len,
+                            "output_tokens_lens": out_len,
                             "batch_size": int(max_batch_size),
                         }
                     )
@@ -934,6 +1062,10 @@ class MT3Trainer(pl.LightningModule):
                 num_workers=self.config.training.num_workers // n_datasets,
                 sampler=sampler,
                 shuffle=True,
+                collate_fn=collate_with_context,
+                persistent_workers=(self.config.training.num_workers > 0),
+                pin_memory=True,
+                prefetch_factor=4,
             )
             for i, dataset in enumerate(datasets)
         }
@@ -975,6 +1107,10 @@ class MT3Trainer(pl.LightningModule):
                 num_workers=self.config.training.num_workers // n_datasets,
                 sampler=sampler,
                 shuffle=shuffle,
+                collate_fn=collate_with_context,
+                persistent_workers=(self.config.training.num_workers > 0),
+                pin_memory=True,
+                prefetch_factor=4,
             )
             for i, dataset in enumerate(datasets)
         }
@@ -1005,6 +1141,10 @@ class MT3Trainer(pl.LightningModule):
             test_data,
             batch_size=self.config.training.batch_test,
             num_workers=self.config.training.num_workers,
+            collate_fn=collate_with_context,
+            persistent_workers=(self.config.training.num_workers > 0),
+            pin_memory=True,
+            prefetch_factor=4,
         )
         return testloader
 
@@ -1115,7 +1255,8 @@ def my_main(config: OmegaConf):
         #  val_check_interval=0.0, # 0.0:disable, None:total training batch.
         check_val_every_n_epoch=config.training.evaluation_epochs,
         max_steps=config.training.training_steps,
-        reload_dataloaders_every_n_epochs=5,
+        # reload_dataloaders_every_n_epochs=5,
+        reload_dataloaders_every_n_epochs=0,
         log_every_n_steps=50,
         #  strategy="dp",
         # strategy='ddp_find_unused_parameters_true'
@@ -1123,6 +1264,9 @@ def my_main(config: OmegaConf):
         gradient_clip_algorithm="value",
         # callbacks=[val_call_back,]
         strategy=DDPStrategy(find_unused_parameters=True),
+        # strategy=DDPStrategy(find_unused_parameters=False),
+        precision="16-mixed",
+        num_sanity_val_steps=0,
     )
 
     trainer.fit(model)

@@ -125,7 +125,7 @@ class Multi_Head_Attention(nn.Module):
                 q,
                 k,
                 v,
-                dropout_p=self.dropout_rate if self.training else 0.0,
+                dropout_p=self.dropout_rate,
                 window_size=window_size,
                 causal=self.is_causal,
                 deterministic=decode,
@@ -174,7 +174,7 @@ class Multi_Head_Attention(nn.Module):
                 key,
                 value,
                 attn_bias=bias,
-                p=dropout_p if self.training else 0.0,
+                p=dropout_p,
             )  # [B, T, H, Dh]
             return x.permute(0, 2, 1, 3)  # -> [B, H, T, Dh]
 
@@ -194,7 +194,7 @@ class Multi_Head_Attention(nn.Module):
             k,
             v,
             attn_mask=attn_mask,
-            dropout_p=dropout_p if self.training else 0.0,
+            dropout_p=dropout_p,
             is_causal=False,
         )  # [B, H, T, Dh]
 
