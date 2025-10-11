@@ -44,7 +44,8 @@ class TokenSize(Enum):
     TEMPO = 64
     TIME_SIG_NUM = 16
     TIME_SIG_DENUM = 16
-    ONSET_SEC = 360  # 360 for dur <= 18s, 600 for dur <= 30s
+    # ONSET_SEC = 360  # 360 for dur <= 18s, 600 for dur <= 30s
+    ONSET_SEC = 600  # 360 for dur <= 18s, 600 for dur <= 30s
     PITCH = 128
     NOTE_OFF = 128
     DUR_TATUM = 128  # max note dur: 2 whole notes.

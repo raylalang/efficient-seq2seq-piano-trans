@@ -1,6 +1,5 @@
 # config/experiment_T5_V5_BeatBarContext.yaml
 defaults:
-  - __self__
   - experiment_T5_V0
 
 model:
@@ -16,7 +15,7 @@ training:
   notes: "BeatBarContext"
 
 data:
-  n_frames: 1024
-  max_token_length: 2048
+  n_frames: 512
+  max_token_length: 1024
   # dataset_dir: /nvme1/ray/maestro-v3.0.0
   # dataset_dirs: [/nvme1/ray/maestro-v3.0.0]
