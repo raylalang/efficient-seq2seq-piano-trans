@@ -8,6 +8,7 @@ from pytorch_lightning.strategies import DDPStrategy
 import os
 import sys
 from typing import Tuple
+from datetime import datetime
 
 
 def _resolve_state_dict(ckpt_obj: dict) -> dict:
@@ -54,8 +55,10 @@ def _make_test_outdir(cfg: DictConfig, ckpt_path: str) -> str:
     base = os.path.splitext(os.path.basename(ckpt_path))[0]
     # If user provided a log_dir in config, nest under it for clarity
     log_dir = cfg.get("training", {}).get("log_dir", None)
+    today = datetime.now().strftime("%y%m%d-%H%M%S")
+    base = f"{base}_eval_{today}"
     if log_dir:
-        outdir = os.path.join(log_dir, "test_eval", base)
+        outdir = os.path.join(log_dir, base)
     else:
         outdir = os.path.join("./runs_eval", base)
     os.makedirs(outdir, exist_ok=True)
