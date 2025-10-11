@@ -1,4 +1,4 @@
-# nohup bash ./train_V0.sh > train_V0.log 2>&1 &
+# nohup bash ./train_V0_Double.sh > train_V0_Double.log 2>&1 &
 
 export CUDA_VISIBLE_DEVICES=6,7
 config=experiment_T5_V0
@@ -10,5 +10,7 @@ python train.py --config-name=$config\
   +model.context_fuse=null\
   training.training_steps=100000\
   training.online_testing=false\
-  training.notes="NoContext"
+  training.notes="NoContextDouble"\
+  data.n_frames=1024\
+  data.max_token_length=2048
 
